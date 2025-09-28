@@ -71,9 +71,8 @@ impl CircuitBreaker {
 
     /// Check if request should be allowed through the circuit
     pub fn should_allow_request(&self) -> bool {
-        let current_state = **self.state.load();
-
-        match current_state {
+        // Single atomic load with immediate pattern matching for better performance
+        match &**self.state.load() {
             CircuitState::Closed => true,
             CircuitState::Open => {
                 // Check if timeout has elapsed to try half-open
@@ -105,9 +104,8 @@ impl CircuitBreaker {
 
     /// Record a successful request
     pub fn record_success(&self) {
-        let current_state = **self.state.load();
-
-        match current_state {
+        // Single atomic load with immediate pattern matching
+        match &**self.state.load() {
             CircuitState::Closed => {
                 // Reset failure count on success
                 self.failure_count.store(0, Ordering::Relaxed);
@@ -129,15 +127,14 @@ impl CircuitBreaker {
 
     /// Record a failed request
     pub fn record_failure(&self) {
-        let current_state = **self.state.load();
-
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap_or_default()
             .as_secs();
         self.last_failure_time.store(now, Ordering::Relaxed);
 
-        match current_state {
+        // Single atomic load with immediate pattern matching
+        match &**self.state.load() {
             CircuitState::Closed => {
                 let failure_count = self.failure_count.fetch_add(1, Ordering::Relaxed);
                 if failure_count + 1 >= self.failure_threshold {

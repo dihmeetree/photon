@@ -9,7 +9,7 @@ use pingora_http::{RequestHeader, ResponseHeader};
 use pingora_proxy::Session;
 use std::sync::{
     atomic::{AtomicU64, Ordering},
-    Arc,
+    Arc, OnceLock,
 };
 
 use crate::{
@@ -20,6 +20,61 @@ use crate::{
     gateway::RequestContext,
     routes::CompiledRoute,
 };
+
+/// Cache for common header values to avoid repeated allocations
+static COMMON_HEADER_VALUES: OnceLock<std::collections::HashMap<String, String>> = OnceLock::new();
+
+/// Initialize common header values cache
+fn get_common_header_values() -> &'static std::collections::HashMap<String, String> {
+    COMMON_HEADER_VALUES.get_or_init(|| {
+        let mut values = std::collections::HashMap::new();
+
+        // Common CORS headers
+        values.insert("access-control-allow-origin".to_string(), "*".to_string());
+        values.insert(
+            "access-control-allow-methods".to_string(),
+            "GET, POST, PUT, DELETE, OPTIONS".to_string(),
+        );
+        values.insert(
+            "access-control-allow-headers".to_string(),
+            "Content-Type, Authorization, X-API-Key".to_string(),
+        );
+
+        // Common content types
+        values.insert(
+            "content-type-json".to_string(),
+            "application/json".to_string(),
+        );
+        values.insert("content-type-text".to_string(), "text/plain".to_string());
+        values.insert("content-type-html".to_string(), "text/html".to_string());
+
+        // Common security headers
+        values.insert("x-content-type-options".to_string(), "nosniff".to_string());
+        values.insert("x-frame-options".to_string(), "DENY".to_string());
+        values.insert("x-xss-protection".to_string(), "1; mode=block".to_string());
+
+        // Cache control values
+        values.insert(
+            "cache-control-no-cache".to_string(),
+            "no-cache, no-store, must-revalidate".to_string(),
+        );
+        values.insert(
+            "cache-control-public".to_string(),
+            "public, max-age=3600".to_string(),
+        );
+
+        values
+    })
+}
+
+/// Get cached header value or create new one
+fn get_or_create_header_value(key: &str, default: &str) -> String {
+    if let Some(cached) = get_common_header_values().get(key) {
+        cached.clone()
+    } else {
+        default.to_string()
+    }
+}
 
 /// Trait for middleware components
 #[async_trait]
@@ -72,7 +127,7 @@ impl RateLimitingMiddleware {
     fn extract_key(&self, session: &Session, ctx: &RequestContext) -> Result<String> {
         match &self.config.key {
             RateLimitingKey::Ip => {
-                // Optimized IP to string conversion to avoid heap allocation
+                // Optimized IP to string conversion with pre-allocated capacity
                 let mut ip_buffer = [0u8; 45]; // Max length for IPv6 address
                 let ip_str = {
                     use std::io::Write;
@@ -83,7 +138,10 @@ impl RateLimitingMiddleware {
                     std::str::from_utf8(&ip_buffer[..len])
                         .expect("IP address should always be valid UTF-8")
                 };
-                Ok(ip_str.to_string())
+                // Pre-allocate with exact capacity to avoid reallocations
+                let mut key_buffer = String::with_capacity(ip_str.len());
+                key_buffer.push_str(ip_str);
+                Ok(key_buffer)
             }
             RateLimitingKey::Header(header_name) => session
                 .req_header()
@@ -656,22 +714,22 @@ impl Middleware for HeaderTransformMiddleware {
         _route: &CompiledRoute,
     ) -> Result<()> {
         if let Some(request_headers) = &self.config.request_headers {
-            // Add headers
+            // Add headers with optimized value lookup
             if let Some(add_headers) = &request_headers.add {
                 for (name, value) in add_headers.iter() {
                     let name_str = name.clone();
-                    let value_str = value.clone();
+                    let value_str = get_or_create_header_value(name, value);
                     upstream_request
                         .insert_header(name_str, value_str)
                         .map_err(|e| anyhow!("Failed to add header {}: {}", name, e))?;
                 }
             }
 
-            // Set headers (overwrite)
+            // Set headers (overwrite) with optimized value lookup
             if let Some(set_headers) = &request_headers.set {
                 for (name, value) in set_headers.iter() {
                     let name_str = name.clone();
-                    let value_str = value.clone();
+                    let value_str = get_or_create_header_value(name, value);
                     upstream_request.remove_header(name_str.as_str());
                     upstream_request
                         .insert_header(name_str, value_str)
@@ -698,22 +756,22 @@ impl Middleware for HeaderTransformMiddleware {
         _route: &CompiledRoute,
     ) -> Result<()> {
         if let Some(response_headers) = &self.config.response_headers {
-            // Add headers
+            // Add headers with optimized value lookup
             if let Some(add_headers) = &response_headers.add {
                 for (name, value) in add_headers.iter() {
                     let name_str = name.clone();
-                    let value_str = value.clone();
+                    let value_str = get_or_create_header_value(name, value);
                     response
                         .insert_header(name_str, value_str)
                         .map_err(|e| anyhow!("Failed to add response header {}: {}", name, e))?;
                 }
             }
 
-            // Set headers (overwrite)
+            // Set headers (overwrite) with optimized value lookup
             if let Some(set_headers) = &response_headers.set {
                 for (name, value) in set_headers.iter() {
                     let name_str = name.clone();
-                    let value_str = value.clone();
+                    let value_str = get_or_create_header_value(name, value);
                     response.remove_header(name_str.as_str());
                     response
                         .insert_header(name_str, value_str)

@@ -1,9 +1,83 @@
 /// Metrics collection and monitoring for the API Gateway
 use anyhow::Result;
 use prometheus::{Counter, Histogram, HistogramOpts, IntCounter, IntGauge, Opts, Registry};
-use std::{sync::Arc, time::Duration};
+use std::{
+    sync::{
+        atomic::{AtomicU64, Ordering},
+        Arc,
+    },
+    time::Duration,
+};
 
 use crate::config::MetricsConfig;
+
+/// Batched metrics for efficient updates
+#[derive(Debug, Default)]
+pub struct MetricsBatch {
+    /// Number of requests in this batch
+    pub requests: u64,
+    /// Number of errors in this batch
+    pub errors: u64,
+    /// Number of upstream errors in this batch
+    pub upstream_errors: u64,
+    /// Total duration in seconds for all requests in this batch
+    pub total_duration_seconds: f64,
+    /// Number of 2xx responses
+    pub responses_2xx: u64,
+    /// Number of 3xx responses
+    pub responses_3xx: u64,
+    /// Number of 4xx responses
+    pub responses_4xx: u64,
+    /// Number of 5xx responses
+    pub responses_5xx: u64,
+    /// Other status codes
+    pub responses_other: u64,
+}
+
+impl MetricsBatch {
+    /// Create a new empty metrics batch
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Add a request to the batch
+    pub fn add_request(&mut self) {
+        self.requests += 1;
+    }
+
+    /// Add a response to the batch
+    pub fn add_response(&mut self, status_code: u16, duration: Duration) {
+        self.total_duration_seconds += duration.as_secs_f64();
+
+        match status_code {
+            200..=299 => self.responses_2xx += 1,
+            300..=399 => self.responses_3xx += 1,
+            400..=499 => self.responses_4xx += 1,
+            500..=599 => self.responses_5xx += 1,
+            _ => self.responses_other += 1,
+        }
+    }
+
+    /// Add an error to the batch
+    pub fn add_error(&mut self) {
+        self.errors += 1;
+    }
+
+    /// Add an upstream error to the batch
+    pub fn add_upstream_error(&mut self) {
+        self.upstream_errors += 1;
+    }
+
+    /// Check if the batch is empty
+    pub fn is_empty(&self) -> bool {
+        self.requests == 0 && self.errors == 0 && self.upstream_errors == 0
+    }
+
+    /// Clear the batch
+    pub fn clear(&mut self) {
+        *self = Self::default();
+    }
+}
 
 /// Metrics collector for the API Gateway
 pub struct MetricsCollector {
@@ -170,6 +244,49 @@ impl MetricsCollector {
             // For now, just increment the total counter to avoid high cardinality
             // In production, you'd want to use labeled metrics with status_group
             self.response_status_total.inc();
+        }
+    }
+
+    /// Apply a batch of metrics updates efficiently
+    pub fn apply_batch(&self, batch: &MetricsBatch) {
+        if batch.is_empty() {
+            return;
+        }
+
+        // Apply request metrics
+        if batch.requests > 0 {
+            self.requests_total.inc_by(batch.requests);
+        }
+
+        // Apply error metrics
+        if batch.errors > 0 {
+            self.gateway_errors_total.inc_by(batch.errors);
+        }
+
+        // Apply upstream error metrics
+        if batch.upstream_errors > 0 {
+            self.upstream_errors_total.inc_by(batch.upstream_errors);
+        }
+
+        // Apply duration metrics (average duration for the batch)
+        if batch.requests > 0 && batch.total_duration_seconds > 0.0 {
+            let avg_duration = batch.total_duration_seconds / batch.requests as f64;
+            // Record multiple observations for batched requests
+            for _ in 0..batch.requests {
+                self.request_duration.observe(avg_duration);
+            }
+        }
+
+        // Apply status code metrics if detailed metrics are enabled
+        if self.config.detailed_metrics {
+            let total_responses = batch.responses_2xx
+                + batch.responses_3xx
+                + batch.responses_4xx
+                + batch.responses_5xx
+                + batch.responses_other;
+            if total_responses > 0 {
+                self.response_status_total.inc_by(total_responses as f64);
+            }
         }
     }
 
@@ -340,6 +457,127 @@ impl MetricsMiddleware {
     /// Record gateway error
     pub fn on_gateway_error(&self) {
         self.collector.record_error();
+    }
+}
+
+/// High-performance metrics aggregator with batching
+pub struct MetricsAggregator {
+    collector: Arc<MetricsCollector>,
+    current_batch: std::sync::Mutex<MetricsBatch>,
+    batch_size_threshold: usize,
+    time_threshold_ms: u64,
+    last_flush_time: AtomicU64,
+}
+
+impl MetricsAggregator {
+    /// Create a new metrics aggregator
+    pub fn new(
+        collector: Arc<MetricsCollector>,
+        batch_size: usize,
+        flush_interval_ms: u64,
+    ) -> Self {
+        let now_millis = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_millis() as u64;
+
+        Self {
+            collector,
+            current_batch: std::sync::Mutex::new(MetricsBatch::new()),
+            batch_size_threshold: batch_size,
+            time_threshold_ms: flush_interval_ms,
+            last_flush_time: AtomicU64::new(now_millis),
+        }
+    }
+
+    /// Add a request to the batch
+    pub fn record_request(&self) {
+        if let Ok(mut batch) = self.current_batch.try_lock() {
+            batch.add_request();
+            self.check_and_flush(&mut batch);
+        } else {
+            // Fallback to direct recording if lock is contended
+            self.collector.record_request();
+        }
+    }
+
+    /// Add a response to the batch
+    pub fn record_response(&self, status_code: u16, duration: Duration) {
+        if let Ok(mut batch) = self.current_batch.try_lock() {
+            batch.add_response(status_code, duration);
+            self.check_and_flush(&mut batch);
+        } else {
+            // Fallback to direct recording if lock is contended
+            self.collector.record_response(status_code, duration);
+        }
+    }
+
+    /// Add an error to the batch
+    pub fn record_error(&self) {
+        if let Ok(mut batch) = self.current_batch.try_lock() {
+            batch.add_error();
+            self.check_and_flush(&mut batch);
+        } else {
+            // Fallback to direct recording if lock is contended
+            self.collector.record_error();
+        }
+    }
+
+    /// Add an upstream error to the batch
+    pub fn record_upstream_error(&self) {
+        if let Ok(mut batch) = self.current_batch.try_lock() {
+            batch.add_upstream_error();
+            self.check_and_flush(&mut batch);
+        } else {
+            // Fallback to direct recording if lock is contended
+            self.collector.record_upstream_error();
+        }
+    }
+
+    /// Check if batch should be flushed and flush if needed
+    fn check_and_flush(&self, batch: &mut MetricsBatch) {
+        let should_flush = self.should_flush(batch);
+        if should_flush {
+            self.flush_batch(batch);
+        }
+    }
+
+    /// Check if batch should be flushed based on size or time
+    fn should_flush(&self, batch: &MetricsBatch) -> bool {
+        // Check size threshold
+        if batch.requests >= self.batch_size_threshold as u64 {
+            return true;
+        }
+
+        // Check time threshold
+        let now_millis = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_millis() as u64;
+        let last_flush = self.last_flush_time.load(Ordering::Relaxed);
+
+        now_millis.saturating_sub(last_flush) >= self.time_threshold_ms
+    }
+
+    /// Flush the current batch to metrics collector
+    fn flush_batch(&self, batch: &mut MetricsBatch) {
+        if !batch.is_empty() {
+            self.collector.apply_batch(batch);
+            batch.clear();
+
+            let now_millis = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_millis() as u64;
+            self.last_flush_time.store(now_millis, Ordering::Relaxed);
+        }
+    }
+
+    /// Force flush any pending metrics
+    pub fn flush(&self) {
+        if let Ok(mut batch) = self.current_batch.lock() {
+            self.flush_batch(&mut batch);
+        }
     }
 }
 

@@ -4,9 +4,38 @@ use log::debug;
 use pingora_http::RequestHeader;
 use regex::Regex;
 use std::collections::HashMap;
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 
 use crate::config::RouteConfig;
+
+/// Cache for common regex patterns to avoid recompilation
+static COMMON_REGEX_PATTERNS: OnceLock<HashMap<String, Regex>> = OnceLock::new();
+
+/// Initialize common regex patterns cache
+fn get_common_patterns() -> &'static HashMap<String, Regex> {
+    COMMON_REGEX_PATTERNS.get_or_init(|| {
+        let mut patterns = HashMap::new();
+
+        // Pre-compile common API patterns
+        if let Ok(regex) = Regex::new("^/api/.*$") {
+            patterns.insert("/api/**".to_string(), regex);
+        }
+        if let Ok(regex) = Regex::new("^/api/v[0-9]+/.*$") {
+            patterns.insert("/api/v*/***".to_string(), regex);
+        }
+        if let Ok(regex) = Regex::new("^/assets/.*$") {
+            patterns.insert("/assets/**".to_string(), regex);
+        }
+        if let Ok(regex) = Regex::new("^/static/.*$") {
+            patterns.insert("/static/**".to_string(), regex);
+        }
+        if let Ok(regex) = Regex::new("^.*$") {
+            patterns.insert("/**".to_string(), regex);
+        }
+
+        patterns
+    })
+}
 
 /// Compiled route with regex pattern for efficient matching
 #[derive(Debug, Clone)]
@@ -22,8 +51,10 @@ pub struct CompiledRoute {
 impl CompiledRoute {
     /// Create a new compiled route from configuration
     pub fn new(config: RouteConfig) -> Result<Self> {
-        // Compile path pattern as regex
-        let path_regex = if config.path.starts_with('^') && config.path.ends_with('$') {
+        // Check cache for common patterns first for better performance
+        let path_regex = if let Some(cached_regex) = get_common_patterns().get(&config.path) {
+            cached_regex.clone()
+        } else if config.path.starts_with('^') && config.path.ends_with('$') {
             // Already a regex pattern
             Regex::new(&config.path)
                 .map_err(|e| anyhow!("Invalid path regex '{}': {}", config.path, e))?

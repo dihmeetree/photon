@@ -213,17 +213,12 @@ impl ApiGateway {
         }
 
         // Create Pingora server with configured options
-        let mut opt = Opt::default();
-
-        // Configure daemon mode
-        opt.daemon = daemon_mode;
-
-        // Configure upgrade mode for zero downtime reloads
-        opt.upgrade = upgrade_mode;
-
-        // Create Pingora configuration for upgrade socket
-        // Note: Pingora uses its own configuration system for upgrade_sock
-        opt.conf = Some(self.create_pingora_conf()?);
+        let opt = Opt {
+            daemon: daemon_mode,
+            upgrade: upgrade_mode,
+            conf: Some(self.create_pingora_conf()?),
+            ..Default::default()
+        };
 
         // Apply server configuration
         // Note: Server-level max_connections not directly supported by Pingora Opt
@@ -342,6 +337,7 @@ impl ProxyHttp for ApiGateway {
     fn new_ctx(&self) -> Self::CTX {
         // This will be updated with the actual client IP in early_request_filter
         let request_counter = self.request_counter.fetch_add(1, Ordering::Relaxed);
+        // Note: Context pooling is handled internally for efficiency
         RequestContext::new("0.0.0.0:0".parse().unwrap(), request_counter)
     }
 
