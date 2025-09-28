@@ -88,6 +88,45 @@ impl CompiledRoute {
 
         true
     }
+
+    /// Fast method check without expensive operations
+    pub fn matches_method(&self, method: &http::Method) -> bool {
+        if let Some(methods) = &self.config.methods {
+            let method_str = method.as_str();
+            methods.iter().any(|m| m.eq_ignore_ascii_case(method_str))
+        } else {
+            true // No method restriction
+        }
+    }
+
+    /// Check for fast exact path matches before expensive regex
+    pub fn has_exact_path_match(&self, path: &str) -> bool {
+        // For simple patterns without regex metacharacters, do direct string comparison
+        let pattern = &self.config.path;
+
+        // Check for exact matches
+        if pattern == path {
+            return true;
+        }
+
+        // Check for simple prefix patterns like "/api/*" -> "/api/"
+        if pattern.ends_with("/*") {
+            let prefix = &pattern[..pattern.len() - 2]; // Remove "/*"
+            if path.starts_with(prefix) {
+                return true;
+            }
+        }
+
+        // Check for simple prefix patterns like "/api/**" -> "/api/"
+        if pattern.ends_with("/**") {
+            let prefix = &pattern[..pattern.len() - 3]; // Remove "/**"
+            if path.starts_with(prefix) {
+                return true;
+            }
+        }
+
+        false
+    }
 }
 
 /// Route manager for handling request routing with optimized storage
@@ -158,21 +197,40 @@ impl RouteManager {
         })
     }
 
-    /// Find the first matching route for a request
+    /// Find the first matching route for a request with fast-path optimization
     pub fn find_route(&self, req: &RequestHeader) -> Option<Arc<CompiledRoute>> {
+        let path = req.uri.path();
+        let method = &req.method;
+
+        // Fast path: try to find routes with exact prefix matches first
         for route in &self.routes {
-            if route.matches(req) {
+            // Quick method check before more expensive path matching
+            if !route.matches_method(method) {
+                continue;
+            }
+
+            // Fast path for exact string matches or simple prefixes
+            if route.has_exact_path_match(path) {
                 debug!(
-                    "Route '{}' matched for {} {}",
-                    route.config.id,
-                    req.method,
-                    req.uri.path()
+                    "Route '{}' fast-matched for {} {}",
+                    route.config.id, req.method, path
                 );
                 return Some(route.clone());
             }
         }
 
-        debug!("No route matched for {} {}", req.method, req.uri.path());
+        // Fallback to full regex matching for complex patterns
+        for route in &self.routes {
+            if route.matches(req) {
+                debug!(
+                    "Route '{}' regex-matched for {} {}",
+                    route.config.id, req.method, path
+                );
+                return Some(route.clone());
+            }
+        }
+
+        debug!("No route matched for {} {}", req.method, path);
         None
     }
 

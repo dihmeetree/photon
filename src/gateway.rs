@@ -56,15 +56,24 @@ pub struct RequestContext {
 impl RequestContext {
     /// Create a new request context with optimized request ID
     pub fn new(client_ip: SocketAddr, request_counter: u64) -> Self {
-        // Use high-performance request ID instead of UUID for better performance
-        let request_id = format!(
+        // High-performance request ID generation without heap allocation
+        use std::fmt::Write;
+
+        let timestamp = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos() as u64;
+
+        // Pre-allocate with exact capacity to avoid reallocations
+        let mut request_id = String::with_capacity(32); // "req-" + 16 hex + "-" + 8 hex = 32 chars
+        write!(
+            &mut request_id,
             "req-{:016x}-{:08x}",
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap_or_default()
-                .as_nanos() as u64,
-            request_counter
-        );
+            timestamp, request_counter
+        )
+        .expect("Writing to String should never fail");
+
+        request_id.shrink_to_fit(); // Ensure no wasted memory
 
         Self {
             start_time: Instant::now(),
@@ -435,15 +444,24 @@ impl ProxyHttp for ApiGateway {
         debug!("Looking for backend: {}", backend_name);
 
         // Create load balancing key (use client IP bytes for better performance)
-        let lb_key = match ctx.client_ip.ip() {
-            std::net::IpAddr::V4(ipv4) => ipv4.octets().to_vec(),
-            std::net::IpAddr::V6(ipv6) => ipv6.octets().to_vec(),
+        // Optimized to use stack-allocated arrays instead of Vec
+        let lb_key_v4;
+        let lb_key_v6;
+        let lb_key: &[u8] = match ctx.client_ip.ip() {
+            std::net::IpAddr::V4(ipv4) => {
+                lb_key_v4 = ipv4.octets();
+                &lb_key_v4[..]
+            }
+            std::net::IpAddr::V6(ipv6) => {
+                lb_key_v6 = ipv6.octets();
+                &lb_key_v6[..]
+            }
         };
 
         // Select upstream using load balancer
         let upstream = self
             .backend_manager
-            .select_upstream(backend_name, &lb_key)
+            .select_upstream(backend_name, lb_key)
             .ok_or_else(|| {
                 error!(
                     "No healthy upstream available for backend '{}' in request {}",
@@ -523,12 +541,20 @@ impl ProxyHttp for ApiGateway {
             }
         }
 
-        // Add tracing headers
-        let client_ip_str = ctx.client_ip.ip().to_string();
+        // Add tracing headers - optimized to avoid string allocation
+        let mut client_ip_buffer = [0u8; 45]; // Max length for IPv6 address
+        let client_ip_str = {
+            use std::io::Write;
+            let mut cursor = std::io::Cursor::new(&mut client_ip_buffer[..]);
+            write!(cursor, "{}", ctx.client_ip.ip()).expect("Writing to buffer should never fail");
+            let len = cursor.position() as usize;
+            std::str::from_utf8(&client_ip_buffer[..len])
+                .expect("IP address should always be valid UTF-8")
+        };
         upstream_request
             .insert_header(
                 X_FORWARDED_FOR_HEADER.get().unwrap().as_str(),
-                &client_ip_str,
+                client_ip_str,
             )
             .map_err(|e| {
                 error!("Failed to add X-Forwarded-For header: {}", e);

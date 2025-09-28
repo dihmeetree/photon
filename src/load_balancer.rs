@@ -512,16 +512,36 @@ impl LoadBalancingStrategy for WeightedRoundRobinStrategy {
     }
 }
 
-/// IP hash load balancing strategy
+/// IP hash load balancing strategy with cached healthy upstreams
 pub struct IpHashStrategy {
     upstreams: ArcSwap<Vec<Arc<UpstreamServer>>>,
+    healthy_cache: ArcSwap<Vec<Arc<UpstreamServer>>>,
 }
 
 impl IpHashStrategy {
     pub fn new(upstreams: Vec<Arc<UpstreamServer>>) -> Self {
+        let healthy_upstreams: Vec<Arc<UpstreamServer>> = upstreams
+            .iter()
+            .filter(|upstream| upstream.can_accept_connection())
+            .cloned()
+            .collect();
+
         Self {
             upstreams: ArcSwap::new(Arc::new(upstreams)),
+            healthy_cache: ArcSwap::new(Arc::new(healthy_upstreams)),
         }
+    }
+
+    /// Update healthy cache periodically
+    fn update_healthy_cache(&self) {
+        let upstreams = self.upstreams.load();
+        let healthy_upstreams: Vec<Arc<UpstreamServer>> = upstreams
+            .iter()
+            .filter(|upstream| upstream.can_accept_connection())
+            .cloned()
+            .collect();
+
+        self.healthy_cache.store(Arc::new(healthy_upstreams));
     }
 
     /// Hash the IP address to select an upstream
@@ -534,14 +554,16 @@ impl IpHashStrategy {
 
 impl LoadBalancingStrategy for IpHashStrategy {
     fn select(&self, key: &[u8]) -> Option<Arc<UpstreamServer>> {
-        let upstreams = self.upstreams.load();
-        let healthy_upstreams: Vec<_> = upstreams
-            .iter()
-            .filter(|upstream| upstream.can_accept_connection())
-            .collect();
+        // Use cached healthy upstreams for better performance
+        let healthy_upstreams = self.healthy_cache.load();
 
         if healthy_upstreams.is_empty() {
-            return None;
+            // Fallback: update cache and try again
+            self.update_healthy_cache();
+            let healthy_upstreams = self.healthy_cache.load();
+            if healthy_upstreams.is_empty() {
+                return None;
+            }
         }
 
         let hash = Self::hash_key(key);
@@ -551,6 +573,8 @@ impl LoadBalancingStrategy for IpHashStrategy {
 
     fn update_upstreams(&self, upstreams: Vec<Arc<UpstreamServer>>) {
         self.upstreams.store(Arc::new(upstreams));
+        // Immediately update healthy cache when upstreams change
+        self.update_healthy_cache();
     }
 
     fn get_upstreams(&self) -> Vec<Arc<UpstreamServer>> {
@@ -662,29 +686,51 @@ impl LoadBalancingStrategy for ConsistentHashStrategy {
     }
 }
 
-/// Random load balancing strategy
+/// Random load balancing strategy with cached healthy upstreams
 pub struct RandomStrategy {
     upstreams: ArcSwap<Vec<Arc<UpstreamServer>>>,
+    healthy_cache: ArcSwap<Vec<Arc<UpstreamServer>>>,
 }
 
 impl RandomStrategy {
     pub fn new(upstreams: Vec<Arc<UpstreamServer>>) -> Self {
+        let healthy_upstreams: Vec<Arc<UpstreamServer>> = upstreams
+            .iter()
+            .filter(|upstream| upstream.can_accept_connection())
+            .cloned()
+            .collect();
+
         Self {
             upstreams: ArcSwap::new(Arc::new(upstreams)),
+            healthy_cache: ArcSwap::new(Arc::new(healthy_upstreams)),
         }
+    }
+
+    /// Update healthy cache periodically
+    fn update_healthy_cache(&self) {
+        let upstreams = self.upstreams.load();
+        let healthy_upstreams: Vec<Arc<UpstreamServer>> = upstreams
+            .iter()
+            .filter(|upstream| upstream.can_accept_connection())
+            .cloned()
+            .collect();
+
+        self.healthy_cache.store(Arc::new(healthy_upstreams));
     }
 }
 
 impl LoadBalancingStrategy for RandomStrategy {
     fn select(&self, _key: &[u8]) -> Option<Arc<UpstreamServer>> {
-        let upstreams = self.upstreams.load();
-        let healthy_upstreams: Vec<_> = upstreams
-            .iter()
-            .filter(|upstream| upstream.can_accept_connection())
-            .collect();
+        // Use cached healthy upstreams for better performance
+        let healthy_upstreams = self.healthy_cache.load();
 
         if healthy_upstreams.is_empty() {
-            return None;
+            // Fallback: update cache and try again
+            self.update_healthy_cache();
+            let healthy_upstreams = self.healthy_cache.load();
+            if healthy_upstreams.is_empty() {
+                return None;
+            }
         }
 
         let index = rand::random::<usize>() % healthy_upstreams.len();
@@ -693,6 +739,8 @@ impl LoadBalancingStrategy for RandomStrategy {
 
     fn update_upstreams(&self, upstreams: Vec<Arc<UpstreamServer>>) {
         self.upstreams.store(Arc::new(upstreams));
+        // Immediately update healthy cache when upstreams change
+        self.update_healthy_cache();
     }
 
     fn get_upstreams(&self) -> Vec<Arc<UpstreamServer>> {

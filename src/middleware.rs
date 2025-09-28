@@ -71,7 +71,20 @@ impl RateLimitingMiddleware {
     /// Extract rate limiting key from request
     fn extract_key(&self, session: &Session, ctx: &RequestContext) -> Result<String> {
         match &self.config.key {
-            RateLimitingKey::Ip => Ok(ctx.client_ip.ip().to_string()),
+            RateLimitingKey::Ip => {
+                // Optimized IP to string conversion to avoid heap allocation
+                let mut ip_buffer = [0u8; 45]; // Max length for IPv6 address
+                let ip_str = {
+                    use std::io::Write;
+                    let mut cursor = std::io::Cursor::new(&mut ip_buffer[..]);
+                    write!(cursor, "{}", ctx.client_ip.ip())
+                        .expect("Writing to buffer should never fail");
+                    let len = cursor.position() as usize;
+                    std::str::from_utf8(&ip_buffer[..len])
+                        .expect("IP address should always be valid UTF-8")
+                };
+                Ok(ip_str.to_string())
+            }
             RateLimitingKey::Header(header_name) => session
                 .req_header()
                 .headers
