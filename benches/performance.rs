@@ -15,6 +15,7 @@ fn benchmark_route_matching(c: &mut Criterion) {
             middleware: None,
             timeout: None,
             retries: None,
+            websocket: None,
         },
         RouteConfig {
             id: "api_orders".to_string(),
@@ -25,6 +26,7 @@ fn benchmark_route_matching(c: &mut Criterion) {
             middleware: None,
             timeout: None,
             retries: None,
+            websocket: None,
         },
         RouteConfig {
             id: "static_assets".to_string(),
@@ -35,6 +37,7 @@ fn benchmark_route_matching(c: &mut Criterion) {
             middleware: None,
             timeout: None,
             retries: None,
+            websocket: None,
         },
         RouteConfig {
             id: "catch_all".to_string(),
@@ -45,6 +48,7 @@ fn benchmark_route_matching(c: &mut Criterion) {
             middleware: None,
             timeout: None,
             retries: None,
+            websocket: None,
         },
     ];
 
