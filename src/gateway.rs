@@ -621,30 +621,47 @@ impl ProxyHttp for ApiGateway {
             upstream.decrement_connections();
         }
 
-        // Record metrics
-        let status_code = session
-            .response_written()
-            .map(|resp| resp.status.as_u16())
-            .unwrap_or(0);
+        // Record metrics (skip for metrics endpoint requests)
+        let is_metrics_request = self.config.metrics.prometheus
+            && session.req_header().uri.path() == self.config.metrics.metrics_path;
 
-        let duration = ctx.duration();
+        if !is_metrics_request {
+            let status_code = session
+                .response_written()
+                .map(|resp| resp.status.as_u16())
+                .unwrap_or(0);
 
-        self.metrics_collector
-            .record_response(status_code, duration);
+            let duration = ctx.duration();
 
-        // Record circuit breaker success for successful responses
-        if let Some(upstream) = &ctx.upstream {
-            if status_code < 500 {
-                upstream.circuit_breaker.record_success();
-            } else {
-                upstream.circuit_breaker.record_failure();
+            self.metrics_collector
+                .record_response(status_code, duration);
+        }
+
+        // Record circuit breaker success for successful responses (skip for metrics requests)
+        if !is_metrics_request {
+            if let Some(upstream) = &ctx.upstream {
+                let status_code = session
+                    .response_written()
+                    .map(|resp| resp.status.as_u16())
+                    .unwrap_or(500); // Default to server error if no response
+
+                if status_code < 500 {
+                    upstream.circuit_breaker.record_success();
+                } else {
+                    upstream.circuit_breaker.record_failure();
+                }
             }
         }
 
         // Log request completion
-        let log_level = if status_code >= 500 {
+        let status_code_for_logging = session
+            .response_written()
+            .map(|resp| resp.status.as_u16())
+            .unwrap_or(0);
+
+        let log_level = if status_code_for_logging >= 500 {
             log::Level::Error
-        } else if status_code >= 400 {
+        } else if status_code_for_logging >= 400 {
             log::Level::Warn
         } else {
             log::Level::Info
@@ -656,8 +673,8 @@ impl ProxyHttp for ApiGateway {
             ctx.request_id,
             session.req_header().method,
             session.req_header().uri.path(),
-            status_code,
-            duration.as_millis(),
+            status_code_for_logging,
+            ctx.duration().as_millis(),
             ctx.upstream
                 .as_ref()
                 .map(|u| u.address.as_str())
