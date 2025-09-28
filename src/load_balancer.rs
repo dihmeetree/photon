@@ -71,7 +71,6 @@ impl CircuitBreaker {
 
     /// Check if request should be allowed through the circuit
     pub fn should_allow_request(&self) -> bool {
-        // Single atomic load with immediate pattern matching for better performance
         match &**self.state.load() {
             CircuitState::Closed => true,
             CircuitState::Open => {

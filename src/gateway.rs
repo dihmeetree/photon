@@ -1,4 +1,4 @@
-/// ⚡ Photon - Core API Gateway implementation using Pingora
+/// Photon - Core API Gateway implementation using Pingora
 use anyhow::Result;
 use async_trait::async_trait;
 use bytes::Bytes;
@@ -64,7 +64,6 @@ impl RequestContext {
             .unwrap_or_default()
             .as_nanos() as u64;
 
-        // Pre-allocate with exact capacity to avoid reallocations
         let mut request_id = String::with_capacity(32); // "req-" + 16 hex + "-" + 8 hex = 32 chars
         write!(
             &mut request_id,
@@ -114,7 +113,7 @@ impl RequestContext {
     }
 }
 
-/// ⚡ Photon - Ultra-high-performance API Gateway implementation
+/// Photon - Ultra-high-performance API Gateway implementation
 #[derive(Clone)]
 pub struct ApiGateway {
     /// Configuration
@@ -201,15 +200,15 @@ impl ApiGateway {
 
     /// Start the Photon API Gateway server
     pub fn run(&self, daemon_mode: bool, upgrade_mode: bool) -> Result<()> {
-        info!("⚡ Starting Photon API Gateway server");
+        info!("Starting Photon API Gateway server");
 
         if daemon_mode {
-            info!("🚀 Running in daemon mode");
+            info!("Running in daemon mode");
         }
 
         if upgrade_mode {
-            info!("🔄 Running in upgrade mode for zero downtime reload");
-            info!("📡 Upgrade socket: {}", self.config.server.upgrade_sock);
+            info!("Running in upgrade mode for zero downtime reload");
+            info!("Upgrade socket: {}", self.config.server.upgrade_sock);
         }
 
         // Create Pingora server with configured options
@@ -260,7 +259,7 @@ impl ApiGateway {
             }
         }
 
-        info!("⚡ Photon API Gateway started successfully");
+        info!("Photon API Gateway started successfully");
         info!("Server ready! Accepting connections on all configured ports");
 
         if self.config.metrics.prometheus {
@@ -337,7 +336,6 @@ impl ProxyHttp for ApiGateway {
     fn new_ctx(&self) -> Self::CTX {
         // This will be updated with the actual client IP in early_request_filter
         let request_counter = self.request_counter.fetch_add(1, Ordering::Relaxed);
-        // Note: Context pooling is handled internally for efficiency
         RequestContext::new("0.0.0.0:0".parse().unwrap(), request_counter)
     }
 
@@ -416,7 +414,6 @@ impl ProxyHttp for ApiGateway {
                 session
                     .write_response_body(Some(Bytes::from_static(b"Not Found")), true)
                     .await?;
-                // Note: Session will be finished automatically
 
                 return Ok(true); // Early return
             }
@@ -455,7 +452,6 @@ impl ProxyHttp for ApiGateway {
                 session
                     .write_response_body(Some(Bytes::from_static(b"Internal Server Error")), true)
                     .await?;
-                // Note: Session will be finished automatically
 
                 return Ok(true);
             }
@@ -479,7 +475,6 @@ impl ProxyHttp for ApiGateway {
         debug!("Looking for backend: {}", backend_name);
 
         // Create load balancing key (use client IP bytes for better performance)
-        // Optimized to use stack-allocated arrays instead of Vec
         let lb_key_v4;
         let lb_key_v6;
         let lb_key: &[u8] = match ctx.client_ip.ip() {
@@ -614,7 +609,6 @@ impl ProxyHttp for ApiGateway {
         ctx: &mut Self::CTX,
     ) -> PingoraResult<()> {
         // Process middleware for response modifications
-        // Note: Since this is a sync method, we can't run async middleware here
         // Response middleware would typically be applied in the logging phase or
         // through a different mechanism that supports async operations
 

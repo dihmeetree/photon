@@ -1,4 +1,4 @@
-//! ⚡ Photon - Ultra-high-performance API Gateway library
+//! Photon - Ultra-high-performance API Gateway library
 //!
 //! Photon provides a complete API Gateway implementation built on
 //! Cloudflare's Pingora framework, featuring light-speed performance:

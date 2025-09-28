@@ -27,7 +27,7 @@ mod routes;
 use config::Config;
 use gateway::ApiGateway;
 
-/// ⚡ Photon - Ultra-high-performance API Gateway built with Cloudflare Pingora
+/// Photon - Ultra-high-performance API Gateway built with Cloudflare Pingora
 #[derive(Parser, Debug)]
 #[command(author, version, about, long_about = None)]
 struct Args {
@@ -55,7 +55,7 @@ fn main() -> anyhow::Result<()> {
     env_logger::Builder::from_env(env_logger::Env::default().default_filter_or(&args.log_level))
         .init();
 
-    info!("⚡ Starting Photon API Gateway...");
+    info!("Starting Photon API Gateway...");
 
     // Load configuration
     let config = match Config::from_file(&args.config) {
@@ -73,7 +73,7 @@ fn main() -> anyhow::Result<()> {
     let rt = tokio::runtime::Runtime::new()?;
     let gateway = rt.block_on(async { ApiGateway::new(config).await })?;
 
-    info!("⚡ Photon initialized successfully - light-speed performance ready!");
+    info!("Photon initialized successfully - ready for high-performance operation");
 
     // Start the gateway server
     gateway.run(args.daemon, args.upgrade)?;

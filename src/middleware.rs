@@ -127,7 +127,6 @@ impl RateLimitingMiddleware {
     fn extract_key(&self, session: &Session, ctx: &RequestContext) -> Result<String> {
         match &self.config.key {
             RateLimitingKey::Ip => {
-                // Optimized IP to string conversion with pre-allocated capacity
                 let mut ip_buffer = [0u8; 45]; // Max length for IPv6 address
                 let ip_str = {
                     use std::io::Write;
@@ -138,7 +137,6 @@ impl RateLimitingMiddleware {
                     std::str::from_utf8(&ip_buffer[..len])
                         .expect("IP address should always be valid UTF-8")
                 };
-                // Pre-allocate with exact capacity to avoid reallocations
                 let mut key_buffer = String::with_capacity(ip_str.len());
                 key_buffer.push_str(ip_str);
                 Ok(key_buffer)
@@ -202,7 +200,6 @@ impl Middleware for RateLimitingMiddleware {
                 .write_response_body(Some(Bytes::from_static(b"Rate limit exceeded")), true)
                 .await
                 .map_err(|e| anyhow!("Failed to write rate limit response body: {}", e))?;
-            // Note: Session will be finished automatically
 
             Ok(true) // Stop processing
         }
@@ -474,7 +471,6 @@ impl Middleware for AuthenticationMiddleware {
                         .write_response_body(Some(Bytes::from_static(b"Invalid JWT token")), true)
                         .await
                         .map_err(|e| anyhow!("Failed to write auth response body: {}", e))?;
-                    // Note: Session will be finished automatically
 
                     return Ok(true);
                 }
@@ -507,7 +503,6 @@ impl Middleware for AuthenticationMiddleware {
                         .write_response_body(Some(Bytes::from_static(b"Invalid API key")), true)
                         .await
                         .map_err(|e| anyhow!("Failed to write auth response body: {}", e))?;
-                    // Note: Session will be finished automatically
 
                     return Ok(true);
                 }
@@ -541,7 +536,6 @@ impl Middleware for AuthenticationMiddleware {
                         )
                         .await
                         .map_err(|e| anyhow!("Failed to write auth response body: {}", e))?;
-                    // Note: Session will be finished automatically
 
                     return Ok(true);
                 }
@@ -639,7 +633,6 @@ impl Middleware for CorsMiddleware {
                         .write_response_header(Box::new(response), false)
                         .await
                         .map_err(|e| anyhow!("Failed to write CORS response: {}", e))?;
-                    // Note: Session will be finished automatically
 
                     return Ok(true);
                 }
