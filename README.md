@@ -115,7 +115,101 @@ RUST_LOG=debug ./target/release/photon --config config.yaml
 
 # Run in daemon mode
 ./target/release/photon --config config.yaml --daemon
+
+# View all available options
+./target/release/photon --help
 ```
+
+### Command Line Options
+
+```
+⚡ Photon - Ultra-high-performance API Gateway built with Cloudflare Pingora
+
+Usage: photon [OPTIONS]
+
+Options:
+  -c, --config <CONFIG>      Configuration file path [default: config.yaml]
+  -l, --log-level <LEVEL>    Log level [default: info]
+  -d, --daemon               Enable daemon mode
+  -u, --upgrade              Enable upgrade mode for zero downtime reload
+  -h, --help                 Print help information
+  -V, --version              Print version information
+```
+
+## Zero Downtime Reload
+
+Photon supports zero downtime reloading using Pingora's built-in graceful upgrade system. This allows you to:
+
+- **Deploy new versions** without dropping connections
+- **Update configurations** without service interruption
+- **Restart the gateway** with zero impact to clients
+
+### Configuration
+
+Add the upgrade socket configuration to your `config.yaml`:
+
+```yaml
+server:
+  # Zero downtime reload configuration
+  upgrade_sock: "/tmp/photon_upgrade.sock"
+```
+
+### Performing Zero Downtime Reload
+
+**Step 1**: Signal the running instance to prepare for graceful shutdown:
+```bash
+pkill -SIGQUIT photon
+```
+
+**Step 2**: Immediately start the new instance with upgrade mode:
+```bash
+./target/release/photon --config config.yaml --daemon --upgrade
+```
+
+**Combined command** for seamless operation:
+```bash
+pkill -SIGQUIT photon && ./target/release/photon --config config.yaml --daemon --upgrade
+```
+
+### What Happens During Reload
+
+1. 🛑 **Old process** receives SIGQUIT and stops accepting new connections
+2. 🔄 **Socket handover** occurs via the upgrade socket
+3. 🚀 **New process** immediately takes over and serves new requests
+4. ⏳ **Old process** continues serving existing requests until completion
+5. ✅ **Zero connection drops** - clients experience seamless service
+
+### Testing Zero Downtime Reload
+
+**Basic Test:**
+```bash
+# Terminal 1: Start continuous requests
+while true; do
+    curl -s -w "Status: %{http_code}, Time: %{time_total}s\n" http://127.0.0.1:8080/
+    sleep 0.1
+done
+
+# Terminal 2: Perform reload
+pkill -SIGQUIT photon && ./target/release/photon --config config.yaml --daemon --upgrade
+```
+
+**Load Test:**
+```bash
+# Start load test
+wrk -t4 -c100 -d30s --latency http://127.0.0.1:8080/
+
+# Perform upgrade during load test (in another terminal)
+pkill -SIGQUIT photon && ./target/release/photon --config config.yaml --daemon --upgrade
+```
+
+### Expected Results
+
+✅ **No 502/503 errors** during upgrade
+✅ **No connection refused errors**
+✅ **Continuous response flow** without interruption
+✅ **Process PID changes** but service remains available
+
+This enterprise-grade capability makes Photon ideal for production environments requiring high availability and seamless deployments.
 
 ## Load Balancing Algorithms
 

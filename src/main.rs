@@ -42,6 +42,10 @@ struct Args {
     /// Enable daemon mode
     #[arg(short, long)]
     daemon: bool,
+
+    /// Enable upgrade mode for zero downtime reload
+    #[arg(short, long)]
+    upgrade: bool,
 }
 
 fn main() -> anyhow::Result<()> {
@@ -72,7 +76,7 @@ fn main() -> anyhow::Result<()> {
     info!("⚡ Photon initialized successfully - light-speed performance ready!");
 
     // Start the gateway server
-    gateway.run()?;
+    gateway.run(args.daemon, args.upgrade)?;
 
     Ok(())
 }

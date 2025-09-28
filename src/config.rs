@@ -38,6 +38,9 @@ pub struct ServerConfig {
     pub connection_timeout: Duration,
     /// Maximum concurrent connections
     pub max_connections: Option<usize>,
+    /// Upgrade socket path for zero downtime reloads
+    #[serde(default = "default_upgrade_sock")]
+    pub upgrade_sock: String,
 }
 
 /// Load balancing configuration
@@ -414,4 +417,8 @@ fn default_read_timeout() -> Duration {
 
 fn default_write_timeout() -> Duration {
     Duration::from_secs(30)
+}
+
+fn default_upgrade_sock() -> String {
+    "/tmp/photon_upgrade.sock".to_string()
 }

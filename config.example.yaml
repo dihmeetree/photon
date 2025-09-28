@@ -14,6 +14,9 @@ server:
   connection_timeout: "30s"
   max_connections: 10000
 
+  # Zero downtime reload configuration
+  upgrade_sock: "/tmp/photon_upgrade.sock"
+
 # Load balancing configuration
 load_balancing:
   # Default algorithm for all backends
@@ -35,9 +38,9 @@ load_balancing:
           write_timeout: "30s"
           tcp_keepalive:
             enabled: true
-            idle: "60s"      # Time before sending keepalive probes
-            interval: "10s"  # Interval between keepalive probes
-            count: 9         # Max failed probes before dropping connection
+            idle: "60s" # Time before sending keepalive probes
+            interval: "10s" # Interval between keepalive probes
+            count: 9 # Max failed probes before dropping connection
         - address: "127.0.0.1:3001"
           weight: 1
           tls: false
@@ -70,7 +73,7 @@ load_balancing:
           write_timeout: "60s"
           tcp_keepalive:
             enabled: true
-            idle: "120s"     # Longer idle time for HTTPS connections
+            idle: "120s" # Longer idle time for HTTPS connections
             interval: "15s"
             count: 6
         - address: "api2.example.com:443"

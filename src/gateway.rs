@@ -179,12 +179,51 @@ impl ApiGateway {
         })
     }
 
+    /// Create Pingora configuration for advanced features like upgrade socket
+    fn create_pingora_conf(&self) -> Result<String> {
+        // Create a temporary configuration file with upgrade socket
+        let mut conf_content = String::new();
+
+        // Write basic Pingora configuration
+        conf_content.push_str("---\n");
+        conf_content.push_str("version: 1\n");
+        conf_content.push_str(&format!(
+            "upgrade_sock: {}\n",
+            self.config.server.upgrade_sock
+        ));
+
+        // Write to a temporary file
+        let temp_conf_path = "/tmp/photon_pingora.conf";
+        std::fs::write(temp_conf_path, conf_content)?;
+
+        Ok(temp_conf_path.to_string())
+    }
+
     /// Start the Photon API Gateway server
-    pub fn run(&self) -> Result<()> {
+    pub fn run(&self, daemon_mode: bool, upgrade_mode: bool) -> Result<()> {
         info!("⚡ Starting Photon API Gateway server");
 
+        if daemon_mode {
+            info!("🚀 Running in daemon mode");
+        }
+
+        if upgrade_mode {
+            info!("🔄 Running in upgrade mode for zero downtime reload");
+            info!("📡 Upgrade socket: {}", self.config.server.upgrade_sock);
+        }
+
         // Create Pingora server with configured options
-        let opt = Opt::default();
+        let mut opt = Opt::default();
+
+        // Configure daemon mode
+        opt.daemon = daemon_mode;
+
+        // Configure upgrade mode for zero downtime reloads
+        opt.upgrade = upgrade_mode;
+
+        // Create Pingora configuration for upgrade socket
+        // Note: Pingora uses its own configuration system for upgrade_sock
+        opt.conf = Some(self.create_pingora_conf()?);
 
         // Apply server configuration
         // Note: Server-level max_connections not directly supported by Pingora Opt
