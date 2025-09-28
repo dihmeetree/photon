@@ -333,10 +333,7 @@ impl ProxyHttp for ApiGateway {
         session: &mut Session,
         ctx: &mut Self::CTX,
     ) -> PingoraResult<bool> {
-        // Record request metrics
-        self.metrics_collector.record_request();
-
-        // Handle metrics endpoint if requested
+        // Handle metrics endpoint if requested (don't count metrics requests in metrics)
         if self.config.metrics.prometheus
             && session.req_header().uri.path() == self.config.metrics.metrics_path
         {
@@ -346,6 +343,9 @@ impl ProxyHttp for ApiGateway {
             );
             return self.serve_metrics(session).await;
         }
+
+        // Record request metrics (after metrics endpoint check)
+        self.metrics_collector.record_request();
 
         // Find matching route
         let route = match self.route_manager.find_route(session.req_header()) {
