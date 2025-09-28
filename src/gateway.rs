@@ -601,8 +601,13 @@ impl ProxyHttp for ApiGateway {
             // The health check manager will handle health status
         }
 
-        // Record error metrics
-        self.metrics_collector.record_upstream_error();
+        // Record error metrics (skip for metrics endpoint requests)
+        let is_metrics_request = self.config.metrics.prometheus
+            && _session.req_header().uri.path() == self.config.metrics.metrics_path;
+
+        if !is_metrics_request {
+            self.metrics_collector.record_upstream_error();
+        }
 
         // Return the error (retries would be handled at a higher level)
         e.set_retry(false);
@@ -683,7 +688,11 @@ impl ProxyHttp for ApiGateway {
 
         if let Some(error) = e {
             error!("Request {} encountered error: {}", ctx.request_id, error);
-            self.metrics_collector.record_error();
+
+            // Record error metrics (skip for metrics endpoint requests)
+            if !is_metrics_request {
+                self.metrics_collector.record_error();
+            }
         }
     }
 }
