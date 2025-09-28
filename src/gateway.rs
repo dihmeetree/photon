@@ -419,6 +419,82 @@ impl ProxyHttp for ApiGateway {
             }
         };
 
+        // Check for WebSocket upgrade requests
+        if route.is_websocket_upgrade_request(session.req_header()) {
+            debug!(
+                "WebSocket upgrade request detected for route: {}",
+                route.config.id
+            );
+
+            // Validate WebSocket subprotocol if requested
+            if let Some(requested_protocol) = session
+                .req_header()
+                .headers
+                .get("sec-websocket-protocol")
+                .and_then(|v| v.to_str().ok())
+            {
+                if !route.validate_websocket_protocol(requested_protocol) {
+                    warn!(
+                        "WebSocket protocol '{}' not allowed for route '{}'",
+                        requested_protocol, route.config.id
+                    );
+
+                    let mut error_response = ResponseHeader::build(400, None).unwrap();
+                    error_response
+                        .insert_header("content-type", "text/plain")
+                        .unwrap();
+
+                    session
+                        .write_response_header(Box::new(error_response), false)
+                        .await?;
+                    session
+                        .write_response_body(
+                            Some(Bytes::from_static(b"WebSocket protocol not supported")),
+                            true,
+                        )
+                        .await?;
+
+                    return Ok(true);
+                }
+            }
+
+            // Store WebSocket context information
+            if ctx.custom_data.is_none() {
+                ctx.custom_data = Some(std::collections::HashMap::new());
+            }
+            if let Some(ref mut data) = ctx.custom_data {
+                data.insert("websocket_upgrade".to_string(), "true".to_string());
+                if let Some(ws_config) = route.websocket_config() {
+                    if let Some(timeout) = ws_config.timeout {
+                        data.insert(
+                            "websocket_timeout".to_string(),
+                            timeout.as_secs().to_string(),
+                        );
+                    }
+                    if let Some(idle_timeout) = ws_config.idle_timeout {
+                        data.insert(
+                            "websocket_idle_timeout".to_string(),
+                            idle_timeout.as_secs().to_string(),
+                        );
+                    }
+                    if let Some(max_size) = ws_config.max_message_size {
+                        data.insert(
+                            "websocket_max_message_size".to_string(),
+                            max_size.to_string(),
+                        );
+                    }
+                }
+            }
+
+            // Record WebSocket upgrade in metrics
+            self.metrics_collector.record_websocket_upgrade();
+
+            info!(
+                "WebSocket upgrade request accepted for route '{}' from {}",
+                route.config.id, ctx.client_ip
+            );
+        }
+
         // Process middleware chain
         debug!("Processing middleware for route: {}", route.config.id);
         match self
@@ -597,6 +673,49 @@ impl ProxyHttp for ApiGateway {
                 error!("Failed to add request ID to upstream: {}", e);
                 pingora_core::Error::new_str("Failed to add request ID")
             })?;
+
+        // Handle WebSocket upgrade headers
+        if let Some(ref custom_data) = ctx.custom_data {
+            if custom_data
+                .get("websocket_upgrade")
+                .map(|v| v == "true")
+                .unwrap_or(false)
+            {
+                debug!("Forwarding WebSocket upgrade headers to upstream");
+
+                // Ensure all required WebSocket headers are present and valid
+                let original_request = session.req_header();
+
+                // These headers should already be present from the client, but ensure they're forwarded
+                let websocket_headers = [
+                    "upgrade",
+                    "connection",
+                    "sec-websocket-key",
+                    "sec-websocket-version",
+                    "sec-websocket-protocol",
+                    "sec-websocket-extensions",
+                ];
+
+                for header_name in &websocket_headers {
+                    if let Some(header_value) = original_request.headers.get(*header_name) {
+                        upstream_request
+                            .insert_header(*header_name, header_value)
+                            .map_err(|e| {
+                                error!(
+                                    "Failed to forward WebSocket header '{}': {}",
+                                    header_name, e
+                                );
+                                pingora_core::Error::new_str("Failed to forward WebSocket header")
+                            })?;
+                    }
+                }
+
+                debug!(
+                    "WebSocket headers forwarded to upstream for request {}",
+                    ctx.request_id
+                );
+            }
+        }
 
         Ok(())
     }

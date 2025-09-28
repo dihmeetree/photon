@@ -114,6 +114,16 @@ pub struct MetricsCollector {
     /// Gateway errors
     gateway_errors_total: IntCounter,
 
+    // WebSocket metrics
+    /// Total number of WebSocket upgrade requests
+    websocket_upgrades_total: IntCounter,
+    /// Number of active WebSocket connections
+    websocket_connections_active: IntGauge,
+    /// Total WebSocket messages processed
+    websocket_messages_total: Counter,
+    /// WebSocket connection duration histogram
+    websocket_connection_duration: Histogram,
+
     /// Configuration
     config: MetricsConfig,
 }
@@ -203,6 +213,36 @@ impl MetricsCollector {
         ))?;
         registry.register(Box::new(gateway_errors_total.clone()))?;
 
+        // WebSocket metrics
+        let websocket_upgrades_total = IntCounter::with_opts(Opts::new(
+            "gateway_websocket_upgrades_total",
+            "Total number of WebSocket upgrade requests",
+        ))?;
+        registry.register(Box::new(websocket_upgrades_total.clone()))?;
+
+        let websocket_connections_active = IntGauge::with_opts(Opts::new(
+            "gateway_websocket_connections_active",
+            "Number of active WebSocket connections",
+        ))?;
+        registry.register(Box::new(websocket_connections_active.clone()))?;
+
+        let websocket_messages_total = Counter::with_opts(Opts::new(
+            "gateway_websocket_messages_total",
+            "Total number of WebSocket messages processed",
+        ))?;
+        registry.register(Box::new(websocket_messages_total.clone()))?;
+
+        let websocket_connection_duration = Histogram::with_opts(
+            HistogramOpts::new(
+                "gateway_websocket_connection_duration_seconds",
+                "WebSocket connection duration in seconds",
+            )
+            .buckets(vec![
+                1.0, 5.0, 10.0, 30.0, 60.0, 300.0, 600.0, 1800.0, 3600.0,
+            ]),
+        )?;
+        registry.register(Box::new(websocket_connection_duration.clone()))?;
+
         Ok(Self {
             registry,
             requests_total,
@@ -216,6 +256,10 @@ impl MetricsCollector {
             unhealthy_upstreams,
             active_connections,
             gateway_errors_total,
+            websocket_upgrades_total,
+            websocket_connections_active,
+            websocket_messages_total,
+            websocket_connection_duration,
             config: config.clone(),
         })
     }
@@ -326,6 +370,28 @@ impl MetricsCollector {
         self.gateway_errors_total.inc();
     }
 
+    /// Record a WebSocket upgrade request
+    pub fn record_websocket_upgrade(&self) {
+        self.websocket_upgrades_total.inc();
+    }
+
+    /// Record a new WebSocket connection
+    pub fn record_websocket_connection_opened(&self) {
+        self.websocket_connections_active.inc();
+    }
+
+    /// Record a closed WebSocket connection
+    pub fn record_websocket_connection_closed(&self, duration: Duration) {
+        self.websocket_connections_active.dec();
+        self.websocket_connection_duration
+            .observe(duration.as_secs_f64());
+    }
+
+    /// Record WebSocket message processing
+    pub fn record_websocket_message(&self) {
+        self.websocket_messages_total.inc();
+    }
+
     /// Get the metrics registry for Prometheus exposition
     pub fn registry(&self) -> &Registry {
         &self.registry
@@ -342,6 +408,8 @@ impl MetricsCollector {
             unhealthy_upstreams: self.unhealthy_upstreams.get(),
             active_connections: self.active_connections.get(),
             gateway_errors_total: self.gateway_errors_total.get(),
+            websocket_upgrades_total: self.websocket_upgrades_total.get(),
+            websocket_connections_active: self.websocket_connections_active.get(),
         }
     }
 
@@ -375,6 +443,10 @@ pub struct MetricsSnapshot {
     pub active_connections: i64,
     /// Total gateway errors
     pub gateway_errors_total: u64,
+    /// Total WebSocket upgrades
+    pub websocket_upgrades_total: u64,
+    /// Active WebSocket connections
+    pub websocket_connections_active: i64,
 }
 
 impl MetricsSnapshot {

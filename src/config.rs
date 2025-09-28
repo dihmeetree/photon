@@ -146,6 +146,25 @@ pub struct RouteConfig {
     pub timeout: Option<Duration>,
     /// Number of retries
     pub retries: Option<u32>,
+    /// WebSocket configuration
+    pub websocket: Option<WebSocketConfig>,
+}
+
+/// WebSocket-specific configuration for routes
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WebSocketConfig {
+    /// Enable WebSocket proxying for this route
+    pub enabled: bool,
+    /// Allowed WebSocket protocols (subprotocols)
+    pub protocols: Option<Vec<String>>,
+    /// WebSocket-specific timeout (overrides route timeout)
+    #[serde(with = "humantime_serde")]
+    pub timeout: Option<Duration>,
+    /// Idle timeout for WebSocket connections
+    #[serde(with = "humantime_serde")]
+    pub idle_timeout: Option<Duration>,
+    /// Maximum message size in bytes
+    pub max_message_size: Option<usize>,
 }
 
 /// Middleware configuration

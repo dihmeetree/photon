@@ -6,7 +6,7 @@ use regex::Regex;
 use std::collections::HashMap;
 use std::sync::{Arc, OnceLock};
 
-use crate::config::RouteConfig;
+use crate::config::{RouteConfig, WebSocketConfig};
 
 /// Cache for common regex patterns to avoid recompilation
 static COMMON_REGEX_PATTERNS: OnceLock<HashMap<String, Regex>> = OnceLock::new();
@@ -157,6 +157,75 @@ impl CompiledRoute {
         }
 
         false
+    }
+
+    /// Check if this route supports WebSocket upgrades
+    pub fn supports_websocket(&self) -> bool {
+        self.config
+            .websocket
+            .as_ref()
+            .map(|ws| ws.enabled)
+            .unwrap_or(false)
+    }
+
+    /// Check if a request is a WebSocket upgrade request
+    pub fn is_websocket_upgrade_request(&self, req: &RequestHeader) -> bool {
+        // Check if route supports WebSocket
+        if !self.supports_websocket() {
+            return false;
+        }
+
+        // HTTP/1.1 requirement for upgrades
+        if req.version != http::Version::HTTP_11 {
+            return false;
+        }
+
+        // Check for Upgrade header with "websocket" value
+        let has_upgrade = req
+            .headers
+            .get("upgrade")
+            .and_then(|v| v.to_str().ok())
+            .map(|v| v.eq_ignore_ascii_case("websocket"))
+            .unwrap_or(false);
+
+        // Check for Connection header with "upgrade" value
+        let has_connection_upgrade = req
+            .headers
+            .get("connection")
+            .and_then(|v| v.to_str().ok())
+            .map(|v| v.to_lowercase().contains("upgrade"))
+            .unwrap_or(false);
+
+        // Check for WebSocket key (required by RFC 6455)
+        let has_ws_key = req.headers.get("sec-websocket-key").is_some();
+
+        // Check for WebSocket version (required by RFC 6455)
+        let has_ws_version = req
+            .headers
+            .get("sec-websocket-version")
+            .and_then(|v| v.to_str().ok())
+            .map(|v| v == "13") // RFC 6455 requires version 13
+            .unwrap_or(false);
+
+        has_upgrade && has_connection_upgrade && has_ws_key && has_ws_version
+    }
+
+    /// Get WebSocket configuration for this route
+    pub fn websocket_config(&self) -> Option<&WebSocketConfig> {
+        self.config.websocket.as_ref()
+    }
+
+    /// Validate WebSocket subprotocol against configured protocols
+    pub fn validate_websocket_protocol(&self, requested_protocol: &str) -> bool {
+        if let Some(ws_config) = &self.config.websocket {
+            if let Some(allowed_protocols) = &ws_config.protocols {
+                return allowed_protocols
+                    .iter()
+                    .any(|p| p.eq_ignore_ascii_case(requested_protocol));
+            }
+        }
+        // If no protocols configured, allow any protocol
+        true
     }
 }
 
@@ -368,6 +437,7 @@ mod tests {
             middleware: None,
             timeout: None,
             retries: None,
+            websocket: None,
         };
 
         let route = CompiledRoute::new(config).unwrap();
@@ -401,6 +471,7 @@ mod tests {
                 middleware: None,
                 timeout: None,
                 retries: None,
+                websocket: None,
             },
             RouteConfig {
                 id: "specific".to_string(),
@@ -411,6 +482,7 @@ mod tests {
                 middleware: None,
                 timeout: None,
                 retries: None,
+                websocket: None,
             },
         ];
 

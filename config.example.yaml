@@ -130,6 +130,34 @@ routes:
     timeout: "5s"
     retries: 0
 
+  # WebSocket routes for real-time communication
+  - id: "websocket_chat"
+    path: "/ws/chat/**"
+    methods: ["GET"] # WebSocket upgrades start as GET requests
+    backend: "web_service"
+    timeout: "5s"
+    retries: 0
+    websocket:
+      enabled: true
+      protocols: ["chat-protocol", "echo-protocol"] # Allowed subprotocols
+      timeout: "300s" # 5 minutes for WebSocket connections
+      idle_timeout: "60s" # Close idle connections after 1 minute
+      max_message_size: 65536 # 64KB max message size
+
+  # WebSocket API endpoints
+  - id: "websocket_api"
+    path: "/ws/api/**"
+    methods: ["GET"]
+    backend: "api_service"
+    middleware: ["auth"] # Authentication still applies to WebSocket upgrades
+    timeout: "10s"
+    retries: 0
+    websocket:
+      enabled: true
+      timeout: "600s" # 10 minutes for API WebSocket connections
+      idle_timeout: "120s" # 2 minute idle timeout for API connections
+      max_message_size: 1048576 # 1MB max message size for API
+
   # Catch-all for any other paths (should be last)
   - id: "web_catchall"
     path: "/**"

@@ -31,13 +31,23 @@
 - **Advanced routing** - Regex pattern matching with host-based routing
 - **Request tracing** - Unique request IDs for distributed tracing
 
+### 🔌 WebSocket Support
+
+- **RFC 6455 compliant WebSocket proxying** - Full protocol support for real-time communication
+- **Per-route WebSocket configuration** - Configurable timeouts, protocols, and message limits
+- **Protocol validation** - Restrict allowed WebSocket subprotocols for security
+- **WebSocket metrics** - Dedicated Prometheus metrics for upgrades, connections, and messages
+- **Authentication integration** - Apply existing auth middleware to WebSocket upgrades
+- **Production-ready** - Proper header forwarding and error handling
+
 ### 📊 Monitoring & Observability
 
-- Prometheus metrics integration
-- Health check monitoring
-- Request tracing with unique IDs
-- Comprehensive logging
-- Real-time metrics dashboard
+- **Prometheus metrics integration** - HTTP requests, responses, errors, and latency
+- **WebSocket metrics** - Upgrades, active connections, messages, and durations
+- **Health check monitoring** - Backend availability and response times
+- **Request tracing** - Unique request IDs for distributed tracing
+- **Comprehensive logging** - Structured logging with performance optimization
+- **Real-time metrics dashboard** - Live performance monitoring
 
 ### 🔧 Configuration
 
@@ -358,17 +368,63 @@ middleware:
     allowed_headers: ["Content-Type", "Authorization"]
 ```
 
+### WebSocket Configuration
+
+Photon provides full WebSocket proxying support with per-route configuration:
+
+```yaml
+routes:
+  # WebSocket chat application
+  - id: "websocket_chat"
+    path: "/ws/chat/**"
+    methods: ["GET"] # WebSocket upgrades start as GET requests
+    backend: "chat_service"
+    websocket:
+      enabled: true
+      protocols: ["chat-protocol", "echo-protocol"] # Allowed subprotocols
+      timeout: "300s" # 5 minutes for WebSocket connections
+      idle_timeout: "60s" # Close idle connections after 1 minute
+      max_message_size: 65536 # 64KB max message size
+
+  # WebSocket API with authentication
+  - id: "websocket_api"
+    path: "/ws/api/**"
+    methods: ["GET"]
+    backend: "api_service"
+    middleware: ["auth"] # Authentication applies to WebSocket upgrades
+    websocket:
+      enabled: true
+      timeout: "600s" # 10 minutes for API WebSocket connections
+      idle_timeout: "120s" # 2 minute idle timeout
+      max_message_size: 1048576 # 1MB max message size for API
+```
+
+**WebSocket Features:**
+- **RFC 6455 compliant** - Full WebSocket protocol support
+- **Protocol validation** - Restrict allowed subprotocols for security
+- **Per-route configuration** - Timeouts, protocols, and limits per route
+- **Authentication integration** - Apply existing middleware to WebSocket upgrades
+- **Comprehensive metrics** - Track upgrades, connections, and message counts
+- **Production-ready** - Proper error handling and header forwarding
+
 ## Monitoring
 
 ### Prometheus Metrics
 
 The gateway exposes comprehensive metrics at the configurable path (default `/metrics`):
 
+**HTTP Metrics:**
 - `gateway_requests_total` - Total requests processed
 - `gateway_request_duration_seconds` - Request duration histogram
 - `gateway_upstream_errors_total` - Upstream connection errors
 - `gateway_healthy_upstreams` - Number of healthy upstreams
 - `gateway_active_connections` - Active client connections
+
+**WebSocket Metrics:**
+- `gateway_websocket_upgrades_total` - Total WebSocket upgrade requests
+- `gateway_websocket_connections_active` - Currently active WebSocket connections
+- `gateway_websocket_messages_total` - Total WebSocket messages processed
+- `gateway_websocket_connection_duration_seconds` - WebSocket connection duration histogram
 
 ### Health Status
 
