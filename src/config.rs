@@ -33,8 +33,6 @@ pub struct ServerConfig {
     pub tls_cert: Option<String>,
     /// TLS private key file path (required if https_addr is set)
     pub tls_key: Option<String>,
-    /// Number of worker threads
-    pub worker_threads: Option<usize>,
     /// Connection timeout
     #[serde(with = "humantime_serde")]
     pub connection_timeout: Duration,
