@@ -17,7 +17,6 @@ pingora-load-balancing = { path = "pingora/pingora-load-balancing", default-feat
 pingora-http = { path = "pingora/pingora-http" }
 pingora-error = { path = "pingora/pingora-error" }
 pingora-runtime = { path = "pingora/pingora-runtime" }
-pingora-cache = { path = "pingora/pingora-cache", default-features = false, features = ["rustls"] }
 pingora-memory-cache = { path = "pingora/pingora-memory-cache" }
 pingora-timeout = { path = "pingora/pingora-timeout" }
 
@@ -83,8 +82,8 @@ harness = false
 [features]
 default = ["rustls"]
 rustls = []
-openssl = ["pingora-core/openssl", "pingora-proxy/openssl", "pingora-load-balancing/openssl", "pingora-cache/openssl"]
-boringssl = ["pingora-core/boringssl", "pingora-proxy/boringssl", "pingora-load-balancing/boringssl", "pingora-cache/boringssl"]
+openssl = ["pingora-core/openssl", "pingora-proxy/openssl", "pingora-load-balancing/openssl"]
+boringssl = ["pingora-core/boringssl", "pingora-proxy/boringssl", "pingora-load-balancing/boringssl"]
 
 [lib]
 name = "photon"
