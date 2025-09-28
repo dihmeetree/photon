@@ -34,7 +34,6 @@ fn init_static_strings() {
     X_FORWARDED_FOR_HEADER.get_or_init(|| "X-Forwarded-For".to_string());
 }
 
-
 /// Request context that carries information throughout the request lifecycle
 #[derive(Debug)]
 pub struct RequestContext {
@@ -225,8 +224,7 @@ impl ApiGateway {
             if let Some(metrics_addr) = &self.config.metrics.metrics_addr {
                 info!(
                     "Metrics available at http://{}{}",
-                    metrics_addr,
-                    self.config.metrics.metrics_path
+                    metrics_addr, self.config.metrics.metrics_path
                 );
             }
         }
@@ -276,7 +274,10 @@ impl ApiGateway {
                     .write_response_header(Box::new(error_response), false)
                     .await?;
                 session
-                    .write_response_body(Some(Bytes::from_static(b"Failed to encode metrics")), true)
+                    .write_response_body(
+                        Some(Bytes::from_static(b"Failed to encode metrics")),
+                        true,
+                    )
                     .await?;
 
                 Ok(true) // Early return - we handled the error response
@@ -339,7 +340,10 @@ impl ProxyHttp for ApiGateway {
         if self.config.metrics.prometheus
             && session.req_header().uri.path() == self.config.metrics.metrics_path
         {
-            debug!("Serving metrics on path: {}", self.config.metrics.metrics_path);
+            debug!(
+                "Serving metrics on path: {}",
+                self.config.metrics.metrics_path
+            );
             return self.serve_metrics(session).await;
         }
 
