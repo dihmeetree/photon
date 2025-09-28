@@ -186,23 +186,6 @@ Before creating any commit, you MUST:
 Co-Authored-By: Claude <noreply@anthropic.com>
 ```
 
-#### **Important Notes on Formatting**
-
-**CRITICAL**: Do NOT use markdown formatting syntax in commit messages:
-
-❌ **AVOID in commit messages**:
-- `**bold text**` - Use plain text instead
-- `*italic text*` - Use plain text instead
-- `[links](url)` - Use plain URLs instead
-- `# headers` - Use plain text with section dividers
-- `` `code blocks` `` - Use plain text instead
-
-✅ **USE instead**:
-- **Plain text with CAPS** for emphasis: PERFORMANCE IMPROVEMENTS
-- **Section headers** with ## and ### (these are acceptable)
-- **Unicode symbols** for visual organization: ✅ 🚀 🔧 📝 🐛
-- **Simple formatting** that renders well in all git interfaces
-
 #### **Commit Types**
 - **feat**: New features or major enhancements
 - **fix**: Bug fixes and corrections
