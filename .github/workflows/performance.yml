@@ -162,12 +162,261 @@ jobs:
     needs: benchmark
     if: github.event_name == 'pull_request'
     steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # Fetch full history for baseline comparison
+
+      - name: Download current benchmark results
+        uses: actions/download-artifact@v4
+        with:
+          name: benchmark-results-${{ github.sha }}
+          path: ./current
+
       - name: Download baseline benchmarks
-        # You would implement logic to download baseline results
-        run: echo "Downloading baseline..."
+        run: |
+          echo "🔍 Looking for baseline benchmark results..."
+
+          # Try to find baseline results from main branch
+          BASELINE_SHA=$(git rev-parse origin/main)
+          echo "Baseline SHA: $BASELINE_SHA"
+
+          # Download baseline results using GitHub API
+          REPO="${{ github.repository }}"
+          TOKEN="${{ secrets.GITHUB_TOKEN }}"
+
+          # Find workflow runs on main branch
+          echo "Searching for baseline benchmark artifacts..."
+          BASELINE_RUN_ID=$(curl -s \
+            -H "Authorization: Bearer $TOKEN" \
+            -H "Accept: application/vnd.github.v3+json" \
+            "https://api.github.com/repos/$REPO/actions/workflows/performance.yml/runs?branch=main&status=completed&per_page=10" \
+            | jq -r '.workflow_runs[0].id // empty')
+
+          if [ -z "$BASELINE_RUN_ID" ]; then
+            echo "⚠️ No baseline benchmark runs found on main branch"
+            echo "This may be the first performance workflow run"
+            echo "baseline_available=false" >> $GITHUB_ENV
+            exit 0
+          fi
+
+          echo "Found baseline run ID: $BASELINE_RUN_ID"
+
+          # Download baseline artifacts
+          ARTIFACTS_URL="https://api.github.com/repos/$REPO/actions/runs/$BASELINE_RUN_ID/artifacts"
+          BASELINE_ARTIFACT_ID=$(curl -s \
+            -H "Authorization: Bearer $TOKEN" \
+            -H "Accept: application/vnd.github.v3+json" \
+            "$ARTIFACTS_URL" \
+            | jq -r '.artifacts[] | select(.name | startswith("benchmark-results-")) | .id' | head -1)
+
+          if [ -z "$BASELINE_ARTIFACT_ID" ]; then
+            echo "⚠️ No baseline benchmark artifacts found"
+            echo "baseline_available=false" >> $GITHUB_ENV
+            exit 0
+          fi
+
+          echo "Downloading baseline artifact ID: $BASELINE_ARTIFACT_ID"
+
+          # Download and extract baseline results
+          curl -L \
+            -H "Authorization: Bearer $TOKEN" \
+            -H "Accept: application/vnd.github.v3+json" \
+            "https://api.github.com/repos/$REPO/actions/artifacts/$BASELINE_ARTIFACT_ID/zip" \
+            -o baseline.zip
+
+          mkdir -p baseline
+          unzip -q baseline.zip -d baseline/ || {
+            echo "⚠️ Failed to extract baseline artifacts"
+            echo "baseline_available=false" >> $GITHUB_ENV
+            exit 0
+          }
+
+          if [ -f "baseline/benchmark_results.json" ]; then
+            echo "✅ Baseline benchmark results downloaded successfully"
+            echo "baseline_available=true" >> $GITHUB_ENV
+          else
+            echo "⚠️ No benchmark_results.json found in baseline"
+            echo "baseline_available=false" >> $GITHUB_ENV
+          fi
 
       - name: Compare performance
+        if: env.baseline_available == 'true'
         run: |
-          # Implement comparison logic here
-          # Only flag major regressions (>25% slower)
-          echo "Checking for major regressions..."
+          echo "📊 Comparing performance against baseline..."
+
+          # Create comparison script
+          cat > compare_benchmarks.py << 'EOF'
+          import json
+          import sys
+          import os
+
+          def load_benchmark_data(file_path):
+              """Load benchmark data from criterion JSON output"""
+              try:
+                  with open(file_path, 'r') as f:
+                      return json.load(f)
+              except (FileNotFoundError, json.JSONDecodeError) as e:
+                  print(f"Error loading {file_path}: {e}")
+                  return None
+
+          def extract_median_time(data, benchmark_name):
+              """Extract median time in nanoseconds from benchmark data"""
+              if not data:
+                  return None
+
+              # Try different possible data structures from criterion output
+              if isinstance(data, dict):
+                  if benchmark_name in data:
+                      bench_data = data[benchmark_name]
+                      if 'median' in bench_data:
+                          return bench_data['median']
+                      if 'mean' in bench_data:
+                          return bench_data['mean']
+
+              return None
+
+          def compare_benchmarks():
+              """Compare current benchmarks against baseline"""
+              baseline_data = load_benchmark_data('baseline/benchmark_results.json')
+              current_data = load_benchmark_data('current/benchmark_results.json')
+
+              if not baseline_data or not current_data:
+                  print("❌ Could not load benchmark data for comparison")
+                  return False
+
+              # Benchmark names to compare
+              benchmarks = [
+                  'route_matching',
+                  'request_id_generation',
+                  'ip_hash_key_generation_ipv4',
+                  'ip_hash_key_generation_ipv6',
+                  'ip_to_string_optimized_ipv4'
+              ]
+
+              regressions = []
+              improvements = []
+
+              print("🔍 Performance Comparison Results:")
+              print("=" * 50)
+
+              for bench_name in benchmarks:
+                  baseline_time = extract_median_time(baseline_data, bench_name)
+                  current_time = extract_median_time(current_data, bench_name)
+
+                  if baseline_time is None or current_time is None:
+                      print(f"⚠️  {bench_name}: Missing data")
+                      continue
+
+                  # Calculate percentage change
+                  change_percent = ((current_time - baseline_time) / baseline_time) * 100
+
+                  status_icon = "📈" if change_percent > 0 else "📉"
+                  change_str = f"{change_percent:+.1f}%"
+
+                  print(f"{status_icon} {bench_name}:")
+                  print(f"   Baseline: {baseline_time:.2f}ns")
+                  print(f"   Current:  {current_time:.2f}ns")
+                  print(f"   Change:   {change_str}")
+                  print()
+
+                  # Flag significant regressions (>25% slower)
+                  if change_percent > 25:
+                      regressions.append({
+                          'name': bench_name,
+                          'change': change_percent,
+                          'baseline': baseline_time,
+                          'current': current_time
+                      })
+                  elif change_percent < -10:  # Significant improvement
+                      improvements.append({
+                          'name': bench_name,
+                          'change': change_percent,
+                          'baseline': baseline_time,
+                          'current': current_time
+                      })
+
+              # Summary
+              print("📋 Summary:")
+              print("=" * 50)
+
+              if improvements:
+                  print("✅ Performance Improvements:")
+                  for imp in improvements:
+                      print(f"   • {imp['name']}: {imp['change']:.1f}% faster")
+
+              if regressions:
+                  print("❌ Performance Regressions (>25% slower):")
+                  for reg in regressions:
+                      print(f"   • {reg['name']}: {reg['change']:.1f}% slower")
+                  print()
+                  print("🚨 REGRESSION DETECTED: Consider investigating performance impact")
+                  return False
+              else:
+                  print("✅ No significant performance regressions detected")
+                  return True
+
+          if __name__ == "__main__":
+              success = compare_benchmarks()
+              sys.exit(0 if success else 1)
+          EOF
+
+          # Run comparison
+          python3 compare_benchmarks.py
+          COMPARISON_RESULT=$?
+
+          # Set output for PR comment
+          echo "comparison_completed=true" >> $GITHUB_ENV
+          echo "has_regressions=$( [ $COMPARISON_RESULT -eq 0 ] && echo 'false' || echo 'true' )" >> $GITHUB_ENV
+
+      - name: Update PR with regression results
+        if: env.comparison_completed == 'true'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+
+            const hasRegressions = process.env.has_regressions === 'true';
+            const icon = hasRegressions ? '🚨' : '✅';
+            const status = hasRegressions ? 'Performance Regressions Detected' : 'No Performance Regressions';
+
+            let comment = `## ${icon} Performance Regression Check
+
+            **Status**: ${status}
+
+            `;
+
+            if (hasRegressions) {
+              comment += `⚠️ **Significant performance regressions detected (>25% slower)**
+
+              Please review the benchmark comparison above and consider:
+              - Investigating the performance impact
+              - Optimizing the affected code paths
+              - Adding performance improvements to offset regressions
+
+              `;
+            } else {
+              comment += `✅ No significant performance regressions found.
+
+              `;
+            }
+
+            comment += `**Note**: This check only flags major regressions (>25% slower) to reduce noise from normal benchmark variance.
+
+            📁 Detailed benchmark data: [Workflow Artifacts](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }})
+            `;
+
+            github.rest.issues.createComment({
+              issue_number: context.issue.number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              body: comment
+            });
+
+      - name: Fail on significant regressions
+        if: env.has_regressions == 'true'
+        run: |
+          echo "❌ Significant performance regressions detected"
+          echo "This step fails to draw attention to performance issues"
+          echo "Review the benchmark comparison and consider performance optimizations"
+          exit 1
