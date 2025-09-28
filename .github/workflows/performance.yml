@@ -77,35 +77,35 @@ jobs:
       # Run core benchmarks (informational only)
       - name: Run core benchmarks
         run: |
-          echo "🚀 Running Photon API Gateway benchmarks..."
+          echo "Running Photon API Gateway benchmarks..."
           echo "Note: Results are informational and may vary in CI environments"
           echo ""
 
           # Run benchmarks with reduced sample size for faster CI
-          cargo bench --bench performance -- --sample-size 50 --output-format json | tee benchmark_results.json
+          cargo bench --bench performance -- --sample-size 50 | tee benchmark_results.txt
 
           echo ""
-          echo "✅ Benchmark run completed"
+          echo "Benchmark run completed"
         continue-on-error: true # Don't fail builds on benchmark issues
 
       # Parse and display benchmark results
       - name: Display benchmark summary
         run: |
-          echo "📊 Benchmark Summary:"
+          echo "Benchmark Summary:"
           echo "===================="
 
-          # Extract key metrics (if jq is available)
-          if command -v jq &> /dev/null; then
-            echo "Route matching: $(jq -r '.route_matching.median // "N/A"' benchmark_results.json 2>/dev/null || echo "N/A") ns"
-            echo "Request ID gen: $(jq -r '.request_id_generation.median // "N/A"' benchmark_results.json 2>/dev/null || echo "N/A") ns"
-            echo "IP hash (IPv4): $(jq -r '.ip_hash_key_generation_ipv4.median // "N/A"' benchmark_results.json 2>/dev/null || echo "N/A") ns"
-            echo "IP hash (IPv6): $(jq -r '.ip_hash_key_generation_ipv6.median // "N/A"' benchmark_results.json 2>/dev/null || echo "N/A") ns"
+          # Extract timing values from criterion text output (median values)
+          if [ -f "benchmark_results.txt" ]; then
+            echo "Route matching: $(grep -A1 "^route_matching" benchmark_results.txt | grep "time:" | grep -oE '[0-9]+\.[0-9]+\s*ns' | sed -n '2p' || echo "N/A")"
+            echo "Request ID gen: $(grep -A1 "^request_id_generation" benchmark_results.txt | grep "time:" | grep -oE '[0-9]+\.[0-9]+\s*ns' | sed -n '2p' || echo "N/A")"
+            echo "IP hash (IPv4): $(grep -A1 "^ip_hash_key_generation_ipv4" benchmark_results.txt | grep "time:" | grep -oE '[0-9]+\.[0-9]+\s*ns' | sed -n '2p' || echo "N/A")"
+            echo "IP hash (IPv6): $(grep -A1 "^ip_hash_key_generation_ipv6" benchmark_results.txt | grep "time:" | grep -oE '[0-9]+\.[0-9]+\s*ns' | sed -n '2p' || echo "N/A")"
           else
             echo "Benchmark data available in artifacts"
           fi
 
           echo ""
-          echo "📝 Note: Performance numbers vary significantly in CI environments"
+          echo "Note: Performance numbers vary significantly in CI environments"
           echo "   Use these results for trend analysis, not absolute comparisons"
         continue-on-error: true
 
@@ -116,7 +116,7 @@ jobs:
         with:
           name: benchmark-results-${{ github.sha }}
           path: |
-            benchmark_results.json
+            benchmark_results.txt
             target/criterion/
           retention-days: 30
 
@@ -232,11 +232,11 @@ jobs:
             exit 0
           }
 
-          if [ -f "baseline/benchmark_results.json" ]; then
+          if [ -f "baseline/benchmark_results.txt" ]; then
             echo "✅ Baseline benchmark results downloaded successfully"
             echo "baseline_available=true" >> $GITHUB_ENV
           else
-            echo "⚠️ No benchmark_results.json found in baseline"
+            echo "⚠️ No benchmark_results.txt found in baseline"
             echo "baseline_available=false" >> $GITHUB_ENV
           fi
 
@@ -247,16 +247,35 @@ jobs:
 
           # Create comparison script
           cat > compare_benchmarks.py << 'EOF'
-          import json
+          import re
           import sys
           import os
 
           def load_benchmark_data(file_path):
-              """Load benchmark data from criterion JSON output"""
+              """Load benchmark data from criterion text output"""
               try:
                   with open(file_path, 'r') as f:
-                      return json.load(f)
-              except (FileNotFoundError, json.JSONDecodeError) as e:
+                      content = f.read()
+
+                  # Parse criterion output format: "benchmark_name    time:   [low ns median ns high ns]"
+                  benchmark_data = {}
+                  lines = content.split('\n')
+
+                  for i, line in enumerate(lines):
+                      # Look for benchmark name lines
+                      if line and not line.startswith(' ') and 'time:' not in line:
+                          benchmark_name = line.strip()
+                          # Look for the time line that follows
+                          if i + 1 < len(lines):
+                              time_line = lines[i + 1].strip()
+                              if 'time:' in time_line:
+                                  # Extract median time: time:   [10.782 ns 10.842 ns 10.927 ns]
+                                  match = re.search(r'time:\s*\[\s*[\d.]+\s*ns\s*([\d.]+)\s*ns', time_line)
+                                  if match:
+                                      benchmark_data[benchmark_name] = float(match.group(1))
+
+                  return benchmark_data
+              except (FileNotFoundError, Exception) as e:
                   print(f"Error loading {file_path}: {e}")
                   return None
 
@@ -264,22 +283,12 @@ jobs:
               """Extract median time in nanoseconds from benchmark data"""
               if not data:
                   return None
-
-              # Try different possible data structures from criterion output
-              if isinstance(data, dict):
-                  if benchmark_name in data:
-                      bench_data = data[benchmark_name]
-                      if 'median' in bench_data:
-                          return bench_data['median']
-                      if 'mean' in bench_data:
-                          return bench_data['mean']
-
-              return None
+              return data.get(benchmark_name)
 
           def compare_benchmarks():
               """Compare current benchmarks against baseline"""
-              baseline_data = load_benchmark_data('baseline/benchmark_results.json')
-              current_data = load_benchmark_data('current/benchmark_results.json')
+              baseline_data = load_benchmark_data('baseline/benchmark_results.txt')
+              current_data = load_benchmark_data('current/benchmark_results.txt')
 
               if not baseline_data or not current_data:
                   print("❌ Could not load benchmark data for comparison")
