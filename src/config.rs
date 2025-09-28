@@ -63,6 +63,8 @@ pub enum LoadBalancingAlgorithm {
     WeightedRoundRobin,
     /// IP hash algorithm
     IpHash,
+    /// Consistent hashing algorithm
+    ConsistentHash,
     /// Random algorithm
     Random,
 }
@@ -76,6 +78,23 @@ pub struct BackendConfig {
     pub health_check: Option<BackendHealthCheckConfig>,
     /// Load balancing algorithm override
     pub algorithm: Option<LoadBalancingAlgorithm>,
+}
+
+/// TCP keepalive configuration
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TcpKeepaliveConfig {
+    /// Enable TCP keepalive
+    #[serde(default)]
+    pub enabled: bool,
+    /// Time before sending keepalive probes
+    #[serde(with = "humantime_serde", default = "default_keepalive_idle")]
+    pub idle: Duration,
+    /// Interval between keepalive probes
+    #[serde(with = "humantime_serde", default = "default_keepalive_interval")]
+    pub interval: Duration,
+    /// Number of failed probes before connection is dropped
+    #[serde(default = "default_keepalive_count")]
+    pub count: u32,
 }
 
 /// Upstream server configuration
@@ -93,6 +112,17 @@ pub struct UpstreamConfig {
     pub sni_hostname: Option<String>,
     /// Maximum concurrent connections to this upstream
     pub max_connections: Option<usize>,
+    /// TCP keepalive configuration
+    pub tcp_keepalive: Option<TcpKeepaliveConfig>,
+    /// Connection timeout
+    #[serde(with = "humantime_serde", default = "default_connection_timeout")]
+    pub connection_timeout: Duration,
+    /// Read timeout
+    #[serde(with = "humantime_serde", default = "default_read_timeout")]
+    pub read_timeout: Duration,
+    /// Write timeout
+    #[serde(with = "humantime_serde", default = "default_write_timeout")]
+    pub write_timeout: Duration,
 }
 
 /// Route configuration
@@ -362,4 +392,28 @@ fn default_api_key_header() -> String {
 
 fn default_metrics_path() -> String {
     "/metrics".to_string()
+}
+
+fn default_keepalive_idle() -> Duration {
+    Duration::from_secs(60)
+}
+
+fn default_keepalive_interval() -> Duration {
+    Duration::from_secs(10)
+}
+
+fn default_keepalive_count() -> u32 {
+    9
+}
+
+fn default_connection_timeout() -> Duration {
+    Duration::from_secs(5)
+}
+
+fn default_read_timeout() -> Duration {
+    Duration::from_secs(30)
+}
+
+fn default_write_timeout() -> Duration {
+    Duration::from_secs(30)
 }

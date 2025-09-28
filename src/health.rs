@@ -83,7 +83,7 @@ impl UpstreamHealthChecker {
         }
     }
 
-    /// Start health checking for this upstream
+    /// Start health checking for this upstream with jittered scheduling
     pub async fn start(&self, global_config: &HealthCheckConfig) {
         if self.running.swap(true, Ordering::Relaxed) {
             return; // Already running
@@ -97,19 +97,32 @@ impl UpstreamHealthChecker {
         let running_check = running.clone();
 
         tokio::spawn(async move {
-            let check_interval = config.interval.unwrap_or(global_config.interval);
+            let base_interval = config.interval.unwrap_or(global_config.interval);
 
-            info!(
-                "Starting health checks for upstream {} (interval: {:?})",
-                upstream.address, check_interval
+            // Add jitter to prevent thundering herd
+            let jitter = rand::random::<f64>() * 0.2; // ±10% jitter
+            let jitter_multiplier = 1.0 + (jitter - 0.1);
+            let check_interval = Duration::from_secs_f64(
+                base_interval.as_secs_f64() * jitter_multiplier
             );
 
+            info!(
+                "Starting health checks for upstream {} (interval: {:?}, jittered: {:?})",
+                upstream.address, base_interval, check_interval
+            );
+
+            // Initial random delay to spread out health checks
+            let initial_delay = Duration::from_millis(rand::random::<u64>() % 1000);
+            tokio::time::sleep(initial_delay).await;
+
             while running_check.load(Ordering::Relaxed) {
+                let check_start = std::time::Instant::now();
                 let check_result =
                     Self::perform_health_check(&upstream, &config, &global_config).await;
+                let check_duration = check_start.elapsed();
 
-                // Update health status
-                {
+                // Update health status and determine next check interval
+                let is_healthy = {
                     let mut status_guard = status.write().unwrap();
                     status_guard.last_check_nanos = std::time::SystemTime::now()
                         .duration_since(std::time::UNIX_EPOCH)
@@ -148,9 +161,20 @@ impl UpstreamHealthChecker {
                             }
                         }
                     }
-                }
+                    status_guard.healthy
+                };
 
-                tokio::time::sleep(check_interval).await;
+                // Adaptive interval based on health status and check duration
+                let sleep_duration = if is_healthy {
+                    check_interval
+                } else {
+                    // More frequent checks for unhealthy upstreams
+                    Duration::from_secs_f64(check_interval.as_secs_f64() * 0.5)
+                }.saturating_sub(check_duration); // Account for check execution time
+
+                if sleep_duration > Duration::ZERO {
+                    tokio::time::sleep(sleep_duration).await;
+                }
             }
 
             info!("Health checks stopped for upstream {}", upstream.address);
@@ -285,20 +309,23 @@ impl HealthCheckManager {
         }
     }
 
-    /// Initialize health checkers for all configured backends
-    async fn initialize_checkers(&self) -> Result<()> {
-        let backend_names = self.backend_manager.get_backend_names();
-
-        for backend_name in backend_names {
-            let upstreams = self.backend_manager.get_backend_upstreams(&backend_name);
+    /// Initialize health checkers for all configured backends with proper backend configs
+    pub async fn initialize_checkers(&self, backend_configs: &std::collections::HashMap<String, crate::config::BackendConfig>) -> Result<()> {
+        for (backend_name, backend_config) in backend_configs {
+            let upstreams = self.backend_manager.get_backend_upstreams(backend_name);
 
             for upstream in upstreams {
-                // Use default health check configuration for now
-                let health_check_config = BackendHealthCheckConfig {
-                    check_type: HealthCheckType::Tcp,
-                    path: None,
-                    expected_status: None,
-                    interval: None,
+                // Use backend-specific health check configuration or defaults
+                let health_check_config = if let Some(backend_health_config) = &backend_config.health_check {
+                    backend_health_config.clone()
+                } else {
+                    // Default health check configuration
+                    BackendHealthCheckConfig {
+                        check_type: HealthCheckType::Http,
+                        path: Some("/health".to_string()),
+                        expected_status: Some(200),
+                        interval: None,
+                    }
                 };
 
                 let checker = Arc::new(UpstreamHealthChecker::new(
@@ -312,7 +339,7 @@ impl HealthCheckManager {
         }
 
         info!(
-            "Initialized {} health checkers",
+            "Initialized {} health checkers with backend-specific configurations",
             self.checkers.read().unwrap().len()
         );
 

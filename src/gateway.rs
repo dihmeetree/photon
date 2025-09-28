@@ -49,8 +49,8 @@ pub struct RequestContext {
     pub client_ip: SocketAddr,
     /// Unique request ID for tracing
     pub request_id: String,
-    /// Custom context data for middleware
-    pub custom_data: std::collections::HashMap<String, String>,
+    /// Custom context data for middleware (only allocated when needed)
+    pub custom_data: Option<std::collections::HashMap<String, String>>,
 }
 
 impl RequestContext {
@@ -73,13 +73,33 @@ impl RequestContext {
             route_id: None,
             client_ip,
             request_id,
-            custom_data: std::collections::HashMap::new(),
+            custom_data: None,
         }
     }
 
     /// Get request duration
     pub fn duration(&self) -> std::time::Duration {
         self.start_time.elapsed()
+    }
+
+    /// Set custom data value (allocates HashMap on first use)
+    pub fn set_custom_data(&mut self, key: String, value: String) {
+        if self.custom_data.is_none() {
+            self.custom_data = Some(std::collections::HashMap::new());
+        }
+        if let Some(ref mut data) = self.custom_data {
+            data.insert(key, value);
+        }
+    }
+
+    /// Get custom data value
+    pub fn get_custom_data(&self, key: &str) -> Option<&String> {
+        self.custom_data.as_ref()?.get(key)
+    }
+
+    /// Check if custom data exists
+    pub fn has_custom_data(&self, key: &str) -> bool {
+        self.custom_data.as_ref().is_some_and(|data| data.contains_key(key))
     }
 }
 
@@ -104,7 +124,7 @@ pub struct ApiGateway {
 
 impl ApiGateway {
     /// Create a new Photon API Gateway instance
-    pub fn new(config: Arc<Config>) -> Result<Self> {
+    pub async fn new(config: Arc<Config>) -> Result<Self> {
         // Initialize static strings for performance
         init_static_strings();
 
@@ -128,6 +148,9 @@ impl ApiGateway {
             config.health_check.clone(),
             backend_manager.clone(),
         ));
+
+        // Initialize health checkers with backend configurations
+        health_check_manager.initialize_checkers(&config.load_balancing.backends).await?;
 
         // Initialize metrics collector
         let metrics_collector = Arc::new(MetricsCollector::new(&config.metrics)?);
@@ -460,13 +483,14 @@ impl ProxyHttp for ApiGateway {
             e
         );
 
-        // Mark upstream as potentially unhealthy
+        // Record circuit breaker failure and mark upstream as potentially unhealthy
         if let Some(upstream) = &ctx.upstream {
             warn!(
-                "Marking upstream {} as potentially unhealthy",
+                "Recording failure for upstream {} circuit breaker",
                 upstream.address
             );
-            // The health check manager will handle this
+            upstream.circuit_breaker.record_failure();
+            // The health check manager will handle health status
         }
 
         // Record error metrics
@@ -499,6 +523,15 @@ impl ProxyHttp for ApiGateway {
 
         self.metrics_collector
             .record_response(status_code, duration);
+
+        // Record circuit breaker success for successful responses
+        if let Some(upstream) = &ctx.upstream {
+            if status_code < 500 {
+                upstream.circuit_breaker.record_success();
+            } else {
+                upstream.circuit_breaker.record_failure();
+            }
+        }
 
         // Log request completion
         let log_level = if status_code >= 500 {
