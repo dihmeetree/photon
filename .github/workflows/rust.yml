@@ -34,9 +34,11 @@ jobs:
         with:
           submodules: recursive
 
-      # Install the latest stable Rust toolchain
+      # Install the latest stable Rust toolchain with rustfmt and clippy
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
 
       # Cache Cargo dependencies and build artifacts to speed up subsequent runs
       # This significantly reduces build times by reusing previously downloaded crates
