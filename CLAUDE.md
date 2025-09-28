@@ -144,17 +144,23 @@ Before completing any development task, verify:
 
 Before creating any commit, you MUST:
 
-1. **Run the full validation suite** in parallel:
+1. **Format all code** before adding to git:
+   ```bash
+   cargo fmt
+   ```
+   **CRITICAL**: Always run `cargo fmt` BEFORE running `git add`. This ensures all code follows consistent formatting standards and prevents formatting-related commit conflicts.
+
+2. **Run the full validation suite** in parallel:
    ```bash
    cargo check && cargo clippy -- -D warnings && cargo test --release
    ```
 
-2. **Verify all changes are intentional**:
+3. **Verify all changes are intentional**:
    - Review `git status` to see all modified files
    - Review `git diff` to understand all changes being committed
    - Ensure no temporary files, debug code, or sensitive information is included
 
-3. **Check recent commit history** for consistency:
+4. **Check recent commit history** for consistency:
    ```bash
    git log --oneline -5
    ```
@@ -331,6 +337,7 @@ When committing changes across multiple files:
 
 Before every commit, verify:
 
+- [ ] **Code is formatted**: `cargo fmt` run before `git add`
 - [ ] All code compiles without warnings
 - [ ] All tests pass
 - [ ] Clippy passes with -D warnings
