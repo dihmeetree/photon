@@ -22,11 +22,17 @@
    cargo clippy -- -D warnings
    ```
 
-4. If you're working on multiple todos, verify compilation, tests, and clippy after each significant change or todo completion.
+4. **Format code** to ensure consistent formatting:
 
-5. If compilation fails, tests break, or clippy warnings occur, fix the issues before proceeding to the next task.
+   ```bash
+   cargo fmt
+   ```
 
-6. Never mark a todo as "completed" without verifying that the code compiles, all tests pass, and clippy passes without warnings.
+5. If you're working on multiple todos, verify compilation, tests, clippy, and formatting after each significant change or todo completion.
+
+6. If compilation fails, tests break, clippy warnings occur, or formatting is incorrect, fix the issues before proceeding to the next task.
+
+7. Never mark a todo as "completed" without verifying that the code compiles, all tests pass, clippy passes without warnings, and code is properly formatted.
 
 ## Development Best Practices
 
@@ -35,6 +41,7 @@
 - Use `cargo check` for quick compilation verification during development
 - Use `cargo test --release` for full test suite verification before completing tasks
 - Use `cargo clippy -- -D warnings` to maintain code quality standards
+- Use `cargo fmt` to ensure consistent code formatting before committing
 
 ## Code Quality Standards
 
