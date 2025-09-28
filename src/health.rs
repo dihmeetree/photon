@@ -102,9 +102,8 @@ impl UpstreamHealthChecker {
             // Add jitter to prevent thundering herd
             let jitter = rand::random::<f64>() * 0.2; // ±10% jitter
             let jitter_multiplier = 1.0 + (jitter - 0.1);
-            let check_interval = Duration::from_secs_f64(
-                base_interval.as_secs_f64() * jitter_multiplier
-            );
+            let check_interval =
+                Duration::from_secs_f64(base_interval.as_secs_f64() * jitter_multiplier);
 
             info!(
                 "Starting health checks for upstream {} (interval: {:?}, jittered: {:?})",
@@ -170,7 +169,8 @@ impl UpstreamHealthChecker {
                 } else {
                     // More frequent checks for unhealthy upstreams
                     Duration::from_secs_f64(check_interval.as_secs_f64() * 0.5)
-                }.saturating_sub(check_duration); // Account for check execution time
+                }
+                .saturating_sub(check_duration); // Account for check execution time
 
                 if sleep_duration > Duration::ZERO {
                     tokio::time::sleep(sleep_duration).await;
@@ -310,23 +310,27 @@ impl HealthCheckManager {
     }
 
     /// Initialize health checkers for all configured backends with proper backend configs
-    pub async fn initialize_checkers(&self, backend_configs: &std::collections::HashMap<String, crate::config::BackendConfig>) -> Result<()> {
+    pub async fn initialize_checkers(
+        &self,
+        backend_configs: &std::collections::HashMap<String, crate::config::BackendConfig>,
+    ) -> Result<()> {
         for (backend_name, backend_config) in backend_configs {
             let upstreams = self.backend_manager.get_backend_upstreams(backend_name);
 
             for upstream in upstreams {
                 // Use backend-specific health check configuration or defaults
-                let health_check_config = if let Some(backend_health_config) = &backend_config.health_check {
-                    backend_health_config.clone()
-                } else {
-                    // Default health check configuration
-                    BackendHealthCheckConfig {
-                        check_type: HealthCheckType::Http,
-                        path: Some("/health".to_string()),
-                        expected_status: Some(200),
-                        interval: None,
-                    }
-                };
+                let health_check_config =
+                    if let Some(backend_health_config) = &backend_config.health_check {
+                        backend_health_config.clone()
+                    } else {
+                        // Default health check configuration
+                        BackendHealthCheckConfig {
+                            check_type: HealthCheckType::Http,
+                            path: Some("/health".to_string()),
+                            expected_status: Some(200),
+                            interval: None,
+                        }
+                    };
 
                 let checker = Arc::new(UpstreamHealthChecker::new(
                     upstream.clone(),

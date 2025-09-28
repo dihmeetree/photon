@@ -71,9 +71,7 @@ fn main() -> anyhow::Result<()> {
 
     // Create and start Photon runtime
     let rt = tokio::runtime::Runtime::new()?;
-    let gateway = rt.block_on(async {
-        ApiGateway::new(config).await
-    })?;
+    let gateway = rt.block_on(async { ApiGateway::new(config).await })?;
 
     info!("⚡ Photon initialized successfully - light-speed performance ready!");
 

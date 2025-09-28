@@ -2,8 +2,8 @@
 use anyhow::{anyhow, Result};
 use arc_swap::ArcSwap;
 use dashmap::DashMap;
-use pingora_core::upstreams::peer::HttpPeer;
 use pingora_core::protocols::TcpKeepalive;
+use pingora_core::upstreams::peer::HttpPeer;
 use std::hash::{Hash, Hasher};
 use std::sync::{
     atomic::{AtomicU64, AtomicUsize, Ordering},
@@ -87,7 +87,9 @@ impl CircuitBreaker {
                     // Try to transition to half-open
                     let current_state = Arc::new(CircuitState::Open);
                     let new_state = Arc::new(CircuitState::HalfOpen);
-                    if **self.state.compare_and_swap(&current_state, new_state) == CircuitState::HalfOpen {
+                    if **self.state.compare_and_swap(&current_state, new_state)
+                        == CircuitState::HalfOpen
+                    {
                         self.success_count.store(0, Ordering::Relaxed);
                         return true;
                     }
@@ -161,7 +163,10 @@ impl CircuitBreaker {
 
     /// Check if circuit is available (closed or half-open)
     pub fn is_available(&self) -> bool {
-        matches!(self.get_state(), CircuitState::Closed | CircuitState::HalfOpen)
+        matches!(
+            self.get_state(),
+            CircuitState::Closed | CircuitState::HalfOpen
+        )
     }
 }
 
@@ -290,7 +295,7 @@ impl UpstreamServer {
         }
 
         // Optimize buffer sizes
-        peer.options.tcp_recv_buf = Some(65536);  // 64KB
+        peer.options.tcp_recv_buf = Some(65536); // 64KB
 
         peer
     }
@@ -432,7 +437,9 @@ impl WeightedRoundRobinStrategy {
     }
 
     /// Build cumulative weights for efficient weighted selection
-    fn build_cumulative_weights(upstreams: &[Arc<UpstreamServer>]) -> (Vec<(Arc<UpstreamServer>, u32)>, u32) {
+    fn build_cumulative_weights(
+        upstreams: &[Arc<UpstreamServer>],
+    ) -> (Vec<(Arc<UpstreamServer>, u32)>, u32) {
         let mut cumulative_weights = Vec::with_capacity(upstreams.len());
         let mut cumulative_weight = 0u32;
 
@@ -475,7 +482,8 @@ impl LoadBalancingStrategy for WeightedRoundRobinStrategy {
         }
 
         // Use counter modulo total weight for selection
-        let target_weight = (self.counter.fetch_add(1, Ordering::Relaxed) as u32) % healthy_total_weight;
+        let target_weight =
+            (self.counter.fetch_add(1, Ordering::Relaxed) as u32) % healthy_total_weight;
         let mut current_weight = 0u32;
 
         for (upstream, _) in &healthy_upstreams {
@@ -486,14 +494,17 @@ impl LoadBalancingStrategy for WeightedRoundRobinStrategy {
         }
 
         // Fallback to first healthy upstream
-        healthy_upstreams.first().map(|(upstream, _)| upstream.clone())
+        healthy_upstreams
+            .first()
+            .map(|(upstream, _)| upstream.clone())
     }
 
     fn update_upstreams(&self, upstreams: Vec<Arc<UpstreamServer>>) {
         let (cumulative_weights, total_weight) = Self::build_cumulative_weights(&upstreams);
         self.upstreams.store(Arc::new(upstreams));
         self.cumulative_weights.store(Arc::new(cumulative_weights));
-        self.total_weight.store(total_weight as usize, Ordering::Relaxed);
+        self.total_weight
+            .store(total_weight as usize, Ordering::Relaxed);
     }
 
     fn get_upstreams(&self) -> Vec<Arc<UpstreamServer>> {
@@ -566,7 +577,10 @@ impl ConsistentHashStrategy {
     }
 
     /// Build hash ring with virtual nodes for better distribution
-    fn build_hash_ring(upstreams: &[Arc<UpstreamServer>], virtual_nodes: u32) -> Vec<(u64, Arc<UpstreamServer>)> {
+    fn build_hash_ring(
+        upstreams: &[Arc<UpstreamServer>],
+        virtual_nodes: u32,
+    ) -> Vec<(u64, Arc<UpstreamServer>)> {
         let mut hash_ring = Vec::new();
 
         for upstream in upstreams {
@@ -593,7 +607,10 @@ impl ConsistentHashStrategy {
     }
 
     /// Find the next available server on the hash ring
-    fn find_server(ring: &[(u64, Arc<UpstreamServer>)], key_hash: u64) -> Option<Arc<UpstreamServer>> {
+    fn find_server(
+        ring: &[(u64, Arc<UpstreamServer>)],
+        key_hash: u64,
+    ) -> Option<Arc<UpstreamServer>> {
         if ring.is_empty() {
             return None;
         }
@@ -728,7 +745,9 @@ impl BackendManager {
                 Arc::new(WeightedRoundRobinStrategy::new(upstreams))
             }
             LoadBalancingAlgorithm::IpHash => Arc::new(IpHashStrategy::new(upstreams)),
-            LoadBalancingAlgorithm::ConsistentHash => Arc::new(ConsistentHashStrategy::new(upstreams)),
+            LoadBalancingAlgorithm::ConsistentHash => {
+                Arc::new(ConsistentHashStrategy::new(upstreams))
+            }
             LoadBalancingAlgorithm::Random => Arc::new(RandomStrategy::new(upstreams)),
         };
 

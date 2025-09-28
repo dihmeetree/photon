@@ -128,3 +128,207 @@ Before completing any development task, verify:
 - [ ] All new constants are actually used
 - [ ] Integration points are properly tested
 - [ ] Documentation reflects actual usage, not theoretical usage
+
+## Git Commit and Push Guidelines
+
+**IMPORTANT**: Follow these guidelines for all commits to maintain high-quality version control.
+
+### **Pre-Commit Requirements**
+
+Before creating any commit, you MUST:
+
+1. **Run the full validation suite** in parallel:
+   ```bash
+   cargo check && cargo clippy -- -D warnings && cargo test --release
+   ```
+
+2. **Verify all changes are intentional**:
+   - Review `git status` to see all modified files
+   - Review `git diff` to understand all changes being committed
+   - Ensure no temporary files, debug code, or sensitive information is included
+
+3. **Check recent commit history** for consistency:
+   ```bash
+   git log --oneline -5
+   ```
+
+### **Commit Message Standards**
+
+#### **Required Format**
+```
+<type>: <concise description>
+
+## <section headers as needed>
+
+### **<subsection headers for details>**
+- ✅ Bullet points for completed features
+- 🚀 Performance improvements
+- 🔧 Configuration changes
+- 📝 Documentation updates
+- 🐛 Bug fixes
+
+<mandatory footer>
+🤖 Generated with [Claude Code](https://claude.ai/code)
+
+Co-Authored-By: Claude <noreply@anthropic.com>
+```
+
+#### **Commit Types**
+- **feat**: New features or major enhancements
+- **fix**: Bug fixes and corrections
+- **perf**: Performance optimizations
+- **refactor**: Code restructuring without functional changes
+- **docs**: Documentation updates
+- **config**: Configuration file changes
+- **test**: Test additions or modifications
+- **chore**: Maintenance tasks and minor updates
+
+#### **Writing Quality Commit Messages**
+
+**DO:**
+- Start with a clear, imperative verb (Add, Fix, Update, Optimize, etc.)
+- Summarize the "why" and impact, not just the "what"
+- Use structured sections (## and ###) for complex changes
+- Include specific technical details for significant changes
+- Use emojis consistently for visual scanning
+- Group related changes logically
+- Mention breaking changes explicitly
+
+**DON'T:**
+- Use vague descriptions like "update code" or "fix issues"
+- Include temporary or debugging information
+- Write overly long single-line descriptions
+- Mix unrelated changes in one commit
+- Commit sensitive information (keys, passwords, etc.)
+
+#### **Example Commit Messages**
+
+**Simple Fix:**
+```
+fix: Resolve connection timeout in health check HTTP requests
+
+🤖 Generated with [Claude Code](https://claude.ai/code)
+
+Co-Authored-By: Claude <noreply@anthropic.com>
+```
+
+**Feature Addition:**
+```
+feat: Add Redis-based session storage with connection pooling
+
+## New Features
+- ✅ Redis session backend implementation
+- 🔧 Configurable connection pool settings
+- 📝 Session TTL and cleanup policies
+
+## Configuration Changes
+- Add redis_url and pool_size to config.yaml
+- Update config.example.yaml with Redis examples
+
+🤖 Generated with [Claude Code](https://claude.ai/code)
+
+Co-Authored-By: Claude <noreply@anthropic.com>
+```
+
+**Major Optimization:**
+```
+perf: Optimize load balancer with lock-free data structures and circuit breakers
+
+## Performance Improvements
+- 🚀 Replace HashMap with DashMap for 40% faster upstream selection
+- 🚀 Implement lock-free circuit breaker pattern
+- 🚀 Add consistent hashing algorithm with 150 virtual nodes per server
+
+## Memory Optimizations
+- Reduce RequestContext allocation by 60% using Option<HashMap>
+- Optimize weighted round-robin from O(weights × servers) to O(servers)
+
+## Breaking Changes
+- RequestContext.custom_data is now Option<HashMap>
+- LoadBalancingAlgorithm enum adds ConsistentHash variant
+
+🤖 Generated with [Claude Code](https://claude.ai/code)
+
+Co-Authored-By: Claude <noreply@anthropic.com>
+```
+
+### **Push Guidelines**
+
+#### **Before Pushing**
+
+1. **Verify commit integrity**:
+   ```bash
+   git status  # Should show clean working tree
+   git log --oneline -1  # Verify commit message format
+   ```
+
+2. **Ensure branch is up to date**:
+   ```bash
+   git fetch origin
+   git status  # Check if behind origin
+   ```
+
+3. **Final validation**: Re-run tests if there were any remote changes merged
+
+#### **Push Process**
+
+1. **Standard push**:
+   ```bash
+   git push origin main
+   ```
+
+2. **Force push only when necessary** (and document why):
+   ```bash
+   git push --force-with-lease origin main
+   ```
+
+#### **Post-Push Verification**
+
+1. **Confirm push succeeded**: Check GitHub web interface
+2. **Verify CI/CD pipelines** (if configured)
+3. **Monitor for any immediate issues**
+
+### **Multi-File Commit Strategy**
+
+When committing changes across multiple files:
+
+1. **Group related changes**: Commit related functionality together
+2. **Separate concerns**: Don't mix features, fixes, and refactoring
+3. **Use staged commits** for complex changes:
+   ```bash
+   git add specific_files
+   git commit -m "feat: specific feature"
+   git add other_files
+   git commit -m "refactor: related cleanup"
+   ```
+
+### **Emergency Procedures**
+
+#### **If Push Fails**
+1. Fetch latest changes: `git fetch origin`
+2. Rebase or merge as appropriate: `git rebase origin/main`
+3. Resolve conflicts if any
+4. Re-run validation suite
+5. Push again
+
+#### **If Commit Contains Errors**
+1. **Before push**: `git commit --amend` to fix
+2. **After push**: Create follow-up commit with fix
+
+#### **If Sensitive Data Committed**
+1. **NEVER push** if not already pushed
+2. **If already pushed**: Immediately contact team lead
+3. Reset branch and recommit without sensitive data
+
+### **Commit Quality Checklist**
+
+Before every commit, verify:
+
+- [ ] All code compiles without warnings
+- [ ] All tests pass
+- [ ] Clippy passes with -D warnings
+- [ ] Commit message follows format standards
+- [ ] No sensitive information included
+- [ ] Changes are logically grouped
+- [ ] Breaking changes are documented
+- [ ] Required footer is present

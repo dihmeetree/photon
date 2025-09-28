@@ -99,7 +99,9 @@ impl RequestContext {
 
     /// Check if custom data exists
     pub fn has_custom_data(&self, key: &str) -> bool {
-        self.custom_data.as_ref().is_some_and(|data| data.contains_key(key))
+        self.custom_data
+            .as_ref()
+            .is_some_and(|data| data.contains_key(key))
     }
 }
 
@@ -150,7 +152,9 @@ impl ApiGateway {
         ));
 
         // Initialize health checkers with backend configurations
-        health_check_manager.initialize_checkers(&config.load_balancing.backends).await?;
+        health_check_manager
+            .initialize_checkers(&config.load_balancing.backends)
+            .await?;
 
         // Initialize metrics collector
         let metrics_collector = Arc::new(MetricsCollector::new(&config.metrics)?);
