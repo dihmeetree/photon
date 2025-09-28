@@ -1,0 +1,97 @@
+[package]
+name = "photon"
+version = "0.0.1"
+edition = "2021"
+authors = ["Photon Team <photon@snoculars.com>"]
+license = "Apache-2.0"
+description = "⚡ Photon - Ultra-high-performance API Gateway built with Cloudflare Pingora"
+repository = "https://github.com/dihmeetree/photon"
+categories = ["asynchronous", "network-programming", "web-programming"]
+keywords = ["api-gateway", "proxy", "load-balancer", "pingora", "photon", "rust"]
+
+[dependencies]
+# Pingora dependencies
+pingora-core = { path = "pingora/pingora-core", default-features = false, features = ["rustls"] }
+pingora-proxy = { path = "pingora/pingora-proxy" }
+pingora-load-balancing = { path = "pingora/pingora-load-balancing", default-features = false, features = ["rustls"] }
+pingora-http = { path = "pingora/pingora-http" }
+pingora-error = { path = "pingora/pingora-error" }
+pingora-runtime = { path = "pingora/pingora-runtime" }
+pingora-cache = { path = "pingora/pingora-cache", default-features = false, features = ["rustls"] }
+
+# Async runtime and utilities
+tokio = { version = "1", features = ["full"] }
+async-trait = "0.1"
+futures = "0.3"
+
+# HTTP and networking
+http = "1.0"
+bytes = "1.0"
+hyper = "0.14"
+
+# Data structures and algorithms
+arc-swap = "1"
+dashmap = "5.5"
+ahash = "0.8"
+
+# Serialization and configuration
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+serde_yaml = "0.9"
+toml = "0.8"
+
+# Logging and metrics
+log = "0.4"
+env_logger = "0.10"
+prometheus = "0.13"
+
+# CLI and argument parsing
+clap = { version = "4.0", features = ["derive"] }
+
+# Utilities
+regex = "1"
+uuid = { version = "1.0", features = ["v4", "serde"] }
+rand = "0.8"
+thiserror = "1.0"
+anyhow = "1.0"
+url = "2.4"
+reqwest = { version = "0.11", features = ["json", "rustls-tls"], default-features = false }
+
+# Cryptography for JWT
+hmac = "0.12"
+sha2 = "0.10"
+base64 = "0.21"
+
+# Time and duration utilities
+chrono = { version = "0.4", features = ["serde"] }
+humantime-serde = "1.1"
+
+[dev-dependencies]
+tokio-test = "0.4"
+reqwest = { version = "0.11", features = ["json", "rustls-tls"], default-features = false }
+criterion = { version = "0.5", features = ["html_reports"] }
+
+[[bench]]
+name = "performance"
+harness = false
+
+[features]
+default = ["rustls"]
+rustls = []
+openssl = ["pingora-core/openssl", "pingora-proxy/openssl", "pingora-load-balancing/openssl", "pingora-cache/openssl"]
+boringssl = ["pingora-core/boringssl", "pingora-proxy/boringssl", "pingora-load-balancing/boringssl", "pingora-cache/boringssl"]
+
+[lib]
+name = "photon"
+path = "src/lib.rs"
+
+[[bin]]
+name = "photon"
+path = "src/main.rs"
+
+[lints.clippy]
+too_many_arguments = "allow"
+
+[lints.rust]
+dead_code = "allow"
+

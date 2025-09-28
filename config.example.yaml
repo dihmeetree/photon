@@ -1,0 +1,157 @@
+# API Gateway Configuration Example
+# Copy this file to config.yaml and modify the values for your setup
+
+server:
+  # HTTP server configuration
+  http_addr: "127.0.0.1:8080"
+
+  # HTTPS server configuration (optional)
+  https_addr: "0.0.0.0:443"
+  tls_cert: "./certs/your-domain.crt"
+  tls_key: "./certs/your-domain.key"
+
+  # Server settings
+  worker_threads: 4
+  connection_timeout: "30s"
+  max_connections: 10000
+
+# Load balancing configuration
+load_balancing:
+  # Default algorithm for all backends
+  # Options: "round_robin", "least_connections", "ip_hash"
+  algorithm: "round_robin"
+
+  # Backend server configurations
+  backends:
+    # Example web service backend
+    web_service:
+      algorithm: "round_robin"
+      upstreams:
+        - address: "127.0.0.1:3000" # Your backend server address
+          weight: 1
+          tls: false
+          max_connections: 100
+        - address: "127.0.0.1:3001"
+          weight: 1
+          tls: false
+          max_connections: 100
+      health_check:
+        check_type: "http"
+        path: "/health" # Health check endpoint on your backend
+        expected_status: 200
+        interval: "10s"
+
+    # Example API backend with HTTPS
+    api_service:
+      algorithm: "least_connections"
+      upstreams:
+        - address: "api1.example.com:443"
+          weight: 1
+          tls: true
+          sni_hostname: "api1.example.com"
+          max_connections: 50
+        - address: "api2.example.com:443"
+          weight: 1
+          tls: true
+          sni_hostname: "api2.example.com"
+          max_connections: 50
+      health_check:
+        check_type: "https"
+        path: "/api/health"
+        expected_status: 200
+        interval: "15s"
+
+# Route configurations
+routes:
+  # Web service routes
+  - id: "web_home"
+    path: "/"
+    methods: ["GET"]
+    backend: "web_service"
+    timeout: "10s"
+    retries: 3
+
+  - id: "web_assets"
+    path: "/assets/**"
+    methods: ["GET"]
+    backend: "web_service"
+    timeout: "10s"
+    retries: 3
+
+  # API routes with authentication
+  - id: "api"
+    path: "/api/**"
+    methods: ["GET", "POST", "PUT", "DELETE"]
+    host: "api.example.com" # Optional: route based on host header
+    backend: "api_service"
+    middleware: ["auth", "rate_limit"] # Apply middleware
+    timeout: "60s"
+    retries: 2
+
+  # Health check endpoint
+  - id: "health_check"
+    path: "/health"
+    methods: ["GET"]
+    backend: "web_service"
+    timeout: "5s"
+    retries: 0
+
+  # Catch-all for any other paths (should be last)
+  - id: "web_catchall"
+    path: "/**"
+    methods: ["GET", "POST", "PUT", "DELETE", "OPTIONS"]
+    backend: "web_service"
+    timeout: "30s"
+    retries: 1
+
+# Middleware configurations
+middleware:
+  # Rate limiting
+  rate_limiting:
+    requests_per_second: 100
+    burst: 200
+    key: "ip" # Rate limit by IP address
+
+  # Authentication
+  authentication:
+    auth_type: "jwt"
+    jwt:
+      secret: "CHANGE-THIS-JWT-SECRET-KEY" # IMPORTANT: Change this in production
+      algorithm: "HS256"
+      header: "Authorization"
+
+  # CORS configuration
+  cors:
+    allowed_origins: ["*"] # Restrict this in production
+    allowed_methods: ["GET", "POST", "PUT", "DELETE", "OPTIONS"]
+    allowed_headers: ["Content-Type", "Authorization", "X-API-Key"]
+    max_age: "86400s"
+
+  # Header transformations
+  transform:
+    request_headers:
+      add:
+        X-Gateway-Version: "1.0"
+        X-Forwarded-Proto: "https"
+      remove:
+        - "X-Internal-Token"
+    response_headers:
+      add:
+        X-Gateway: "Pingora-Gateway"
+        X-Content-Type-Options: "nosniff"
+      set:
+        Server: "Gateway/1.0"
+
+# Health check configuration
+health_check:
+  interval: "10s"
+  timeout: "5s"
+  failure_threshold: 3
+  success_threshold: 2
+
+# Metrics and monitoring
+metrics:
+  prometheus: true
+  metrics_path: "/metrics"
+  metrics_addr: "127.0.0.1:9090" # Prometheus metrics endpoint
+  detailed_metrics: true
