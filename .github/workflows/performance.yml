@@ -1,0 +1,173 @@
+# =============================================================================
+# Performance Benchmarking Pipeline
+#
+# This workflow runs performance benchmarks on the Photon API Gateway to track
+# performance trends and catch major performance regressions. Benchmarks are
+# informational only and will not block PRs.
+#
+# Pipeline stages:
+# 1. Setup: Install Rust toolchain with release optimizations
+# 2. Build: Compile in release mode for accurate performance measurement
+# 3. Benchmark: Run core performance benchmarks
+# 4. Artifacts: Store benchmark results for analysis
+#
+# Note: Benchmarks are inherently volatile in CI environments. Results should
+# be used for trend analysis, not as strict regression gates.
+# =============================================================================
+
+name: Performance Benchmarks
+
+on:
+  push:
+    branches: ["main"]
+    paths:
+      - "src/**"
+      - "benches/**"
+      - "Cargo.toml"
+      - "Cargo.lock"
+  pull_request:
+    branches: ["main"]
+    paths:
+      - "src/**"
+      - "benches/**"
+      - "Cargo.toml"
+      - "Cargo.lock"
+  workflow_dispatch: # Allow manual triggers
+
+env:
+  CARGO_TERM_COLOR: always
+  # Optimize for consistent benchmark results
+  RUST_BACKTRACE: 0
+
+jobs:
+  benchmark:
+    runs-on: ubuntu-latest
+    # Don't run on draft PRs to save resources
+    if: github.event.pull_request.draft == false || github.event_name != 'pull_request'
+
+    steps:
+      # Checkout with submodules for Pingora
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      # Install stable Rust with release optimizations
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      # Cache dependencies for faster builds
+      - name: Cache cargo dependencies
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/bin
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-benchmark-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-benchmark-
+            ${{ runner.os }}-cargo-
+
+      # Build in release mode for accurate benchmarks
+      - name: Build release
+        run: cargo build --release --benches
+
+      # Run core benchmarks (informational only)
+      - name: Run core benchmarks
+        run: |
+          echo "🚀 Running Photon API Gateway benchmarks..."
+          echo "Note: Results are informational and may vary in CI environments"
+          echo ""
+
+          # Run benchmarks with reduced sample size for faster CI
+          cargo bench --bench performance -- --sample-size 50 --output-format json | tee benchmark_results.json
+
+          echo ""
+          echo "✅ Benchmark run completed"
+        continue-on-error: true # Don't fail builds on benchmark issues
+
+      # Parse and display benchmark results
+      - name: Display benchmark summary
+        run: |
+          echo "📊 Benchmark Summary:"
+          echo "===================="
+
+          # Extract key metrics (if jq is available)
+          if command -v jq &> /dev/null; then
+            echo "Route matching: $(jq -r '.route_matching.median // "N/A"' benchmark_results.json 2>/dev/null || echo "N/A") ns"
+            echo "Request ID gen: $(jq -r '.request_id_generation.median // "N/A"' benchmark_results.json 2>/dev/null || echo "N/A") ns"
+            echo "IP hash (IPv4): $(jq -r '.ip_hash_key_generation_ipv4.median // "N/A"' benchmark_results.json 2>/dev/null || echo "N/A") ns"
+            echo "IP hash (IPv6): $(jq -r '.ip_hash_key_generation_ipv6.median // "N/A"' benchmark_results.json 2>/dev/null || echo "N/A") ns"
+          else
+            echo "Benchmark data available in artifacts"
+          fi
+
+          echo ""
+          echo "📝 Note: Performance numbers vary significantly in CI environments"
+          echo "   Use these results for trend analysis, not absolute comparisons"
+        continue-on-error: true
+
+      # Store benchmark results as artifacts
+      - name: Upload benchmark results
+        uses: actions/upload-artifact@v4
+        if: always() # Upload even if benchmarks failed
+        with:
+          name: benchmark-results-${{ github.sha }}
+          path: |
+            benchmark_results.json
+            target/criterion/
+          retention-days: 30
+
+      # Add PR comment with benchmark results (for PRs only)
+      - name: Comment benchmark results on PR
+        if: github.event_name == 'pull_request'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+
+            let comment = `## 📊 Performance Benchmark Results
+
+            Benchmark completed for commit \`${{ github.sha }}\`.
+
+            **⚠️ Note**: CI benchmark results are informational only and may vary significantly due to:
+            - Shared CI runner resources
+            - Variable system load
+            - Different thermal states
+            - Virtualization overhead
+
+            **Results should be used for trend analysis, not absolute performance comparisons.**
+
+            📁 Detailed results are available in the [workflow artifacts](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}).
+
+            For accurate performance testing, run benchmarks locally:
+            \`\`\`bash
+            cargo bench
+            \`\`\`
+            `;
+
+            github.rest.issues.createComment({
+              issue_number: context.issue.number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              body: comment
+            });
+        continue-on-error: true
+
+  # Performance regression detection
+  regression-check:
+    runs-on: ubuntu-latest
+    needs: benchmark
+    if: github.event_name == 'pull_request'
+    steps:
+      - name: Download baseline benchmarks
+        # You would implement logic to download baseline results
+        run: echo "Downloading baseline..."
+
+      - name: Compare performance
+        run: |
+          # Implement comparison logic here
+          # Only flag major regressions (>25% slower)
+          echo "Checking for major regressions..."

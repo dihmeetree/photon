@@ -1,5 +1,5 @@
 # =============================================================================
-# Rust CI/CD Pipeline for API Server
+# Continuous Integration Pipeline for Photon API Gateway
 #
 # This workflow ensures code quality, security, and functionality by running
 # comprehensive checks on every push and pull request to the main branch.
@@ -13,7 +13,7 @@
 # 6. Security: Scan for known vulnerabilities in dependencies
 # =============================================================================
 
-name: Rust
+name: CI
 
 on:
   push:
