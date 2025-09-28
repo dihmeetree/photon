@@ -29,8 +29,10 @@ jobs:
   ci:
     runs-on: ubuntu-latest
     steps:
-      # Checkout the repository code
+      # Checkout the repository code with submodules
       - uses: actions/checkout@v4
+        with:
+          submodules: recursive
 
       # Install the latest stable Rust toolchain
       - name: Install Rust
