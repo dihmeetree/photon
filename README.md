@@ -74,7 +74,6 @@ Create a `config.yaml` file (see `config.yaml` for a complete example):
 ```yaml
 server:
   http_addr: "0.0.0.0:8080"
-  worker_threads: 4
 
 load_balancing:
   backends:
@@ -91,6 +90,8 @@ routes:
     path: "/api/**"
     backend: "web_service"
     methods: ["GET", "POST"]
+    timeout: "30s"  # Route-specific timeout
+    retries: 3      # Number of retry attempts
 
 health_check:
   interval: "10s"
@@ -99,6 +100,8 @@ health_check:
 metrics:
   prometheus: true
   metrics_addr: "127.0.0.1:9090"
+  metrics_path: "/metrics"  # Configurable metrics endpoint path
+  detailed_metrics: true   # Enable detailed request metrics
 ```
 
 ### Running
@@ -265,7 +268,7 @@ middleware:
 
 ### Prometheus Metrics
 
-The gateway exposes comprehensive metrics at `/metrics`:
+The gateway exposes comprehensive metrics at the configurable path (default `/metrics`):
 
 - `gateway_requests_total` - Total requests processed
 - `gateway_request_duration_seconds` - Request duration histogram
@@ -310,14 +313,6 @@ Photon includes numerous performance optimizations for enterprise workloads:
 
 ### Configuration Tuning
 
-#### Worker Threads
-
-Set optimal worker thread count:
-
-```yaml
-server:
-  worker_threads: 8 # Usually 2x CPU cores for CPU-bound workloads
-```
 
 #### Connection Limits
 
@@ -330,6 +325,29 @@ upstreams:
     weight: 1 # Load balancing weight
 ```
 
+#### TCP Keepalive
+
+Configure TCP keepalive for upstream connections to detect failed connections and maintain long-lived connections efficiently:
+
+```yaml
+upstreams:
+  - address: "backend:8080"
+    tcp_keepalive:
+      enabled: true
+      idle: "60s"      # Time before sending keepalive probes
+      interval: "10s"  # Interval between keepalive probes
+      count: 9         # Max failed probes before dropping connection
+    connection_timeout: "30s"
+    read_timeout: "30s"
+    write_timeout: "30s"
+```
+
+**Benefits:**
+- Detects failed connections faster than default TCP timeouts
+- Maintains connection pools efficiently
+- Reduces latency by avoiding broken connection attempts
+- Configurable per upstream for optimal performance
+
 #### Timeouts and Retries
 
 Set appropriate timeouts for your workload:
@@ -341,8 +359,8 @@ server:
 
 routes:
   - path: "/api/**"
-    timeout: "60s" # Request timeout
-    retries: 3 # Retry failed requests
+    timeout: "60s" # Route-specific request timeout (overrides upstream defaults)
+    retries: 3 # Retry configuration (handled by Pingora's internal retry mechanisms)
 
 health_check:
   interval: "10s" # Health check frequency
@@ -350,6 +368,16 @@ health_check:
   failure_threshold: 3 # Failures before marking unhealthy
   success_threshold: 2 # Successes before marking healthy
 ```
+
+**Timeout Behavior:**
+- Route-specific timeouts override upstream connection timeouts
+- Applied to read, write, and total connection timeouts
+- Helps isolate slow routes from affecting other traffic
+
+**Retry Behavior:**
+- Retries are handled by Pingora's robust internal retry mechanisms
+- Provides connection-level retry logic for failed requests
+- Automatic failover to healthy upstreams
 
 #### Rate Limiting Performance
 
@@ -528,7 +556,12 @@ criterion_main!(benches);
 2. Create a feature branch
 3. Make your changes
 4. Add tests
-5. Run `cargo test` and `cargo clippy`
+5. Run the quality checks:
+   ```bash
+   cargo test --release      # Run all tests
+   cargo clippy -- -D warnings  # Check code quality
+   cargo fmt                 # Format code consistently
+   ```
 6. Submit a pull request
 
 ## License
