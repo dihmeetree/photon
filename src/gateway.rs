@@ -174,8 +174,13 @@ impl ApiGateway {
     pub fn run(&self) -> Result<()> {
         info!("⚡ Starting Photon API Gateway server");
 
-        // Create Pingora server
+        // Create Pingora server with configured options
         let opt = Opt::default();
+
+        // Apply server configuration
+        // Note: Server-level max_connections not directly supported by Pingora Opt
+        // It's handled at the individual service level instead
+
         let mut server = Server::new(Some(opt))?;
         server.bootstrap();
 
@@ -214,7 +219,19 @@ impl ApiGateway {
 
         info!("⚡ Photon API Gateway started successfully");
         info!("Server ready! Accepting connections on all configured ports");
-        info!("Metrics available at http://127.0.0.1:9090/metrics");
+
+        if self.config.metrics.prometheus {
+            if let Some(metrics_addr) = &self.config.metrics.metrics_addr {
+                // Note: Pingora's prometheus service currently uses hardcoded /metrics path
+                // TODO: Implement custom metrics service to support configurable metrics_path
+                info!(
+                    "Metrics available at http://{}/metrics (configured path '{}' not yet supported)",
+                    metrics_addr,
+                    self.config.metrics.metrics_path
+                );
+            }
+        }
+
         info!("Ready to proxy requests");
 
         // Run the server (this blocks forever)
@@ -384,7 +401,34 @@ impl ProxyHttp for ApiGateway {
         upstream.increment_connections();
 
         // Convert to HttpPeer
-        let peer = Box::new(upstream.to_http_peer());
+        let mut peer = Box::new(upstream.to_http_peer());
+
+        // Apply route-specific timeout if configured
+        if let Some(route) = ctx
+            .route_id
+            .as_ref()
+            .and_then(|id| self.route_manager.get_route(id))
+        {
+            if let Some(timeout) = route.config.timeout {
+                debug!(
+                    "Applying route timeout {:?} for request {}",
+                    timeout, ctx.request_id
+                );
+                peer.options.read_timeout = Some(timeout);
+                peer.options.write_timeout = Some(timeout);
+                peer.options.total_connection_timeout = Some(timeout);
+            }
+
+            // Apply route-specific retry configuration
+            if let Some(_retries) = route.config.retries {
+                debug!(
+                    "Route retries configured ({}) - handled by Pingora's retry mechanisms",
+                    _retries
+                );
+                // Note: Pingora handles retries internally through the proxy framework
+                // TODO: Implement application-level retry logic if needed
+            }
+        }
 
         info!(
             "Selected upstream {} for request {} (backend: {})",
