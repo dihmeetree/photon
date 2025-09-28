@@ -5,7 +5,7 @@ use pingora_timeout::{sleep, timeout};
 use std::{
     collections::HashMap,
     sync::{
-        atomic::{AtomicBool, Ordering},
+        atomic::{AtomicBool, AtomicU64, Ordering},
         Arc,
     },
     time::Duration,
@@ -30,6 +30,131 @@ pub struct HealthStatus {
     pub last_check_nanos: u64,
     /// Last error message (if any)
     pub last_error: Option<String>,
+}
+
+/// Atomic health status for lockless reads/writes
+#[derive(Debug)]
+pub struct AtomicHealthStatus {
+    /// Packed health state: bit 0 = healthy, bits 1-31 = consecutive_failures, bits 32-63 = consecutive_successes
+    packed_state: AtomicU64,
+    /// Last check timestamp (nanos since UNIX_EPOCH)
+    last_check_nanos: AtomicU64,
+    /// Last error message (using Arc for atomic swap)
+    last_error: arc_swap::ArcSwap<Option<String>>,
+}
+
+impl AtomicHealthStatus {
+    /// Create new atomic health status
+    pub fn new() -> Self {
+        let now_nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos() as u64;
+
+        // Pack initial state: healthy=true, failures=0, successes=0
+        let initial_state = 1u64; // bit 0 set for healthy
+
+        Self {
+            packed_state: AtomicU64::new(initial_state),
+            last_check_nanos: AtomicU64::new(now_nanos),
+            last_error: arc_swap::ArcSwap::new(Arc::new(None)),
+        }
+    }
+
+    /// Atomically update health status based on check result
+    pub fn update_from_result(
+        &self,
+        result: Result<(), &str>,
+        success_threshold: u32,
+        failure_threshold: u32,
+    ) -> bool {
+        let current_state = self.packed_state.load(Ordering::Relaxed);
+        let (healthy, failures, successes) = Self::unpack_state(current_state);
+
+        let (new_healthy, new_failures, new_successes, error_msg) = match result {
+            Ok(_) => {
+                let new_successes = successes + 1;
+                let new_failures = 0;
+                let new_healthy = new_successes >= success_threshold;
+                (new_healthy, new_failures, new_successes, None)
+            }
+            Err(error) => {
+                let new_failures = failures + 1;
+                let new_successes = 0;
+                let new_healthy = if new_failures >= failure_threshold {
+                    false
+                } else {
+                    healthy
+                };
+                (
+                    new_healthy,
+                    new_failures,
+                    new_successes,
+                    Some(error.to_string()),
+                )
+            }
+        };
+
+        // Pack new state
+        let new_state = Self::pack_state(new_healthy, new_failures, new_successes);
+        self.packed_state.store(new_state, Ordering::Relaxed);
+
+        // Update timestamp
+        let now_nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos() as u64;
+        self.last_check_nanos.store(now_nanos, Ordering::Relaxed);
+
+        // Update error message
+        self.last_error.store(Arc::new(error_msg));
+
+        new_healthy
+    }
+
+    /// Get current health status (lock-free read)
+    pub fn get_status(&self) -> HealthStatus {
+        let state = self.packed_state.load(Ordering::Relaxed);
+        let (healthy, failures, successes) = Self::unpack_state(state);
+        let last_check_nanos = self.last_check_nanos.load(Ordering::Relaxed);
+        let last_error = (**self.last_error.load()).clone();
+
+        HealthStatus {
+            healthy,
+            consecutive_failures: failures,
+            consecutive_successes: successes,
+            last_check_nanos,
+            last_error,
+        }
+    }
+
+    /// Pack health state into u64: bit 0 = healthy, bits 1-31 = failures, bits 32-63 = successes
+    fn pack_state(healthy: bool, failures: u32, successes: u32) -> u64 {
+        let healthy_bit = if healthy { 1u64 } else { 0u64 };
+        let failures_bits = (failures as u64 & 0x7FFFFFFF) << 1; // 31 bits for failures
+        let successes_bits = (successes as u64 & 0xFFFFFFFF) << 32; // 32 bits for successes
+        healthy_bit | failures_bits | successes_bits
+    }
+
+    /// Unpack health state from u64
+    fn unpack_state(state: u64) -> (bool, u32, u32) {
+        let healthy = (state & 1) != 0;
+        let failures = ((state >> 1) & 0x7FFFFFFF) as u32;
+        let successes = (state >> 32) as u32;
+        (healthy, failures, successes)
+    }
+
+    /// Check if healthy (fast atomic read)
+    pub fn is_healthy(&self) -> bool {
+        let state = self.packed_state.load(Ordering::Relaxed);
+        (state & 1) != 0
+    }
+}
+
+impl Default for AtomicHealthStatus {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl HealthStatus {
@@ -67,7 +192,9 @@ pub struct UpstreamHealthChecker {
     upstream: Arc<UpstreamServer>,
     /// Health check configuration
     config: BackendHealthCheckConfig,
-    /// Current health status
+    /// Current health status (atomic for performance)
+    atomic_status: Arc<AtomicHealthStatus>,
+    /// Fallback status for compatibility (kept for get_status method)
     status: Arc<std::sync::RwLock<HealthStatus>>,
     /// Whether health checks are running
     running: AtomicBool,
@@ -76,9 +203,11 @@ pub struct UpstreamHealthChecker {
 impl UpstreamHealthChecker {
     /// Create a new health checker for an upstream
     pub fn new(upstream: Arc<UpstreamServer>, config: BackendHealthCheckConfig) -> Self {
+        let atomic_status = Arc::new(AtomicHealthStatus::new());
         Self {
             upstream,
             config,
+            atomic_status,
             status: Arc::new(std::sync::RwLock::new(HealthStatus::default())),
             running: AtomicBool::new(false),
         }
@@ -94,6 +223,7 @@ impl UpstreamHealthChecker {
         let config = self.config.clone();
         let global_config = global_config.clone();
         let status = self.status.clone();
+        let atomic_status = self.atomic_status.clone();
         let running = Arc::new(AtomicBool::new(true));
         let running_check = running.clone();
 
@@ -121,48 +251,35 @@ impl UpstreamHealthChecker {
                     Self::perform_health_check(&upstream, &config, &global_config).await;
                 let check_duration = check_start.elapsed();
 
-                // Update health status and determine next check interval
-                let is_healthy = {
-                    let mut status_guard = status.write().unwrap();
-                    status_guard.last_check_nanos = std::time::SystemTime::now()
-                        .duration_since(std::time::UNIX_EPOCH)
-                        .unwrap_or_default()
-                        .as_nanos() as u64;
+                // Update health status using atomic operations (much faster!)
+                let was_healthy = atomic_status.is_healthy();
+                let result_str = check_result.as_ref().err().map(|e| e.to_string());
+                let atomic_result = check_result.map_err(|e| e.to_string());
+                let is_healthy = atomic_status.update_from_result(
+                    atomic_result.as_ref().map_err(|s| s.as_str()).copied(),
+                    global_config.success_threshold,
+                    global_config.failure_threshold,
+                );
 
-                    match check_result {
-                        Ok(_) => {
-                            status_guard.consecutive_successes += 1;
-                            status_guard.consecutive_failures = 0;
-                            status_guard.last_error = None;
-
-                            // Mark as healthy if we have enough consecutive successes
-                            if status_guard.consecutive_successes >= global_config.success_threshold
-                            {
-                                if !status_guard.healthy {
-                                    info!("Upstream {} is now healthy", upstream.address);
-                                    upstream.mark_healthy();
-                                }
-                                status_guard.healthy = true;
-                            }
-                        }
-                        Err(e) => {
-                            status_guard.consecutive_failures += 1;
-                            status_guard.consecutive_successes = 0;
-                            status_guard.last_error = Some(e.to_string());
-
-                            // Mark as unhealthy if we have enough consecutive failures
-                            if status_guard.consecutive_failures >= global_config.failure_threshold
-                            {
-                                if status_guard.healthy {
-                                    warn!("Upstream {} is now unhealthy: {}", upstream.address, e);
-                                    upstream.mark_unhealthy();
-                                }
-                                status_guard.healthy = false;
-                            }
-                        }
+                // Update the upstream server's health status if it changed
+                if was_healthy != is_healthy {
+                    if is_healthy {
+                        info!("Upstream {} is now healthy", upstream.address);
+                        upstream.mark_healthy();
+                    } else {
+                        warn!(
+                            "Upstream {} is now unhealthy: {}",
+                            upstream.address,
+                            result_str.unwrap_or_else(|| "unknown error".to_string())
+                        );
+                        upstream.mark_unhealthy();
                     }
-                    status_guard.healthy
-                };
+                }
+
+                // Also update the fallback RwLock status for compatibility
+                if let Ok(mut status_guard) = status.try_write() {
+                    *status_guard = atomic_status.get_status();
+                }
 
                 // Adaptive interval based on health status and check duration
                 let sleep_duration = if is_healthy {
@@ -187,9 +304,14 @@ impl UpstreamHealthChecker {
         self.running.store(false, Ordering::Relaxed);
     }
 
-    /// Get current health status
+    /// Get current health status (atomic read for performance)
     pub fn get_status(&self) -> HealthStatus {
-        self.status.read().unwrap().clone()
+        self.atomic_status.get_status()
+    }
+
+    /// Fast health check (atomic read only)
+    pub fn is_healthy(&self) -> bool {
+        self.atomic_status.is_healthy()
     }
 
     /// Perform a single health check

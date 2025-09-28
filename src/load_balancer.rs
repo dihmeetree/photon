@@ -417,6 +417,12 @@ impl LoadBalancingStrategy for LeastConnectionsStrategy {
 pub struct WeightedRoundRobinStrategy {
     upstreams: ArcSwap<Vec<Arc<UpstreamServer>>>,
     cumulative_weights: ArcSwap<Vec<(Arc<UpstreamServer>, u32)>>,
+    /// Cached healthy upstreams for performance
+    healthy_cache: ArcSwap<Vec<(Arc<UpstreamServer>, u32)>>,
+    /// Total weight of healthy upstreams (cached)
+    healthy_total_weight: AtomicUsize,
+    /// Generation counter for cache invalidation
+    cache_generation: AtomicUsize,
     total_weight: AtomicUsize,
     counter: AtomicUsize,
 }
@@ -424,9 +430,16 @@ pub struct WeightedRoundRobinStrategy {
 impl WeightedRoundRobinStrategy {
     pub fn new(upstreams: Vec<Arc<UpstreamServer>>) -> Self {
         let (cumulative_weights, total_weight) = Self::build_cumulative_weights(&upstreams);
+
+        // Build initial healthy cache
+        let (healthy_cache, healthy_total_weight) = Self::build_healthy_cache(&cumulative_weights);
+
         Self {
             upstreams: ArcSwap::new(Arc::new(upstreams)),
             cumulative_weights: ArcSwap::new(Arc::new(cumulative_weights)),
+            healthy_cache: ArcSwap::new(Arc::new(healthy_cache)),
+            healthy_total_weight: AtomicUsize::new(healthy_total_weight as usize),
+            cache_generation: AtomicUsize::new(0),
             total_weight: AtomicUsize::new(total_weight as usize),
             counter: AtomicUsize::new(0),
         }
@@ -446,33 +459,87 @@ impl WeightedRoundRobinStrategy {
 
         (cumulative_weights, cumulative_weight)
     }
-}
 
-impl LoadBalancingStrategy for WeightedRoundRobinStrategy {
-    fn select(&self, _key: &[u8]) -> Option<Arc<UpstreamServer>> {
-        let cumulative_weights = self.cumulative_weights.load();
-        let total_weight = self.total_weight.load(Ordering::Relaxed);
-
-        if total_weight == 0 || cumulative_weights.is_empty() {
-            return None;
-        }
-
-        // Filter healthy upstreams and recalculate weights if needed
+    /// Build cached healthy upstreams with their weights
+    fn build_healthy_cache(
+        cumulative_weights: &[(Arc<UpstreamServer>, u32)],
+    ) -> (Vec<(Arc<UpstreamServer>, u32)>, u32) {
         let healthy_upstreams: Vec<_> = cumulative_weights
             .iter()
             .filter(|(upstream, _)| upstream.can_accept_connection())
+            .cloned()
             .collect();
 
-        if healthy_upstreams.is_empty() {
-            return None;
-        }
-
-        // Calculate total weight of healthy upstreams
         let healthy_total_weight = healthy_upstreams
             .iter()
             .map(|(upstream, _)| upstream.weight)
             .sum::<u32>();
 
+        (healthy_upstreams, healthy_total_weight)
+    }
+
+    /// Update healthy cache periodically for performance
+    fn update_healthy_cache(&self) {
+        let cumulative_weights = self.cumulative_weights.load();
+        let (healthy_cache, healthy_total_weight) = Self::build_healthy_cache(&cumulative_weights);
+
+        self.healthy_cache.store(Arc::new(healthy_cache));
+        self.healthy_total_weight
+            .store(healthy_total_weight as usize, Ordering::Relaxed);
+        self.cache_generation.fetch_add(1, Ordering::Relaxed);
+    }
+}
+
+impl LoadBalancingStrategy for WeightedRoundRobinStrategy {
+    fn select(&self, _key: &[u8]) -> Option<Arc<UpstreamServer>> {
+        // Use cached healthy upstreams for better performance
+        let healthy_upstreams = self.healthy_cache.load();
+        let healthy_total_weight = self.healthy_total_weight.load(Ordering::Relaxed) as u32;
+
+        if healthy_total_weight == 0 || healthy_upstreams.is_empty() {
+            // Fallback: update cache and try again
+            self.update_healthy_cache();
+            let updated_healthy = self.healthy_cache.load();
+            let updated_weight = self.healthy_total_weight.load(Ordering::Relaxed) as u32;
+
+            if updated_weight == 0 || updated_healthy.is_empty() {
+                return None;
+            }
+
+            // Use the updated cache
+            return self.select_from_cache(&updated_healthy, updated_weight);
+        }
+
+        // Select from cached healthy upstreams
+        self.select_from_cache(&healthy_upstreams, healthy_total_weight)
+    }
+
+    fn update_upstreams(&self, upstreams: Vec<Arc<UpstreamServer>>) {
+        let (cumulative_weights, total_weight) = Self::build_cumulative_weights(&upstreams);
+        let (healthy_cache, healthy_total_weight) = Self::build_healthy_cache(&cumulative_weights);
+
+        self.upstreams.store(Arc::new(upstreams));
+        self.cumulative_weights.store(Arc::new(cumulative_weights));
+        self.healthy_cache.store(Arc::new(healthy_cache));
+        self.healthy_total_weight
+            .store(healthy_total_weight as usize, Ordering::Relaxed);
+        self.total_weight
+            .store(total_weight as usize, Ordering::Relaxed);
+        self.cache_generation.fetch_add(1, Ordering::Relaxed);
+    }
+
+    fn get_upstreams(&self) -> Vec<Arc<UpstreamServer>> {
+        (*self.upstreams.load()).to_vec()
+    }
+}
+
+impl WeightedRoundRobinStrategy {
+    /// Select from cached healthy upstreams (extracted for reuse)
+    fn select_from_cache(
+        &self,
+        healthy_upstreams: &[(Arc<UpstreamServer>, u32)],
+        healthy_total_weight: u32,
+    ) -> Option<Arc<UpstreamServer>> {
         if healthy_total_weight == 0 {
             return None;
         }
@@ -482,10 +549,16 @@ impl LoadBalancingStrategy for WeightedRoundRobinStrategy {
             (self.counter.fetch_add(1, Ordering::Relaxed) as u32) % healthy_total_weight;
         let mut current_weight = 0u32;
 
-        for (upstream, _) in &healthy_upstreams {
+        for (upstream, _) in healthy_upstreams {
             current_weight += upstream.weight;
             if target_weight < current_weight {
-                return Some(upstream.clone());
+                // Double-check the selected upstream is still healthy
+                if upstream.can_accept_connection() {
+                    return Some(upstream.clone());
+                }
+                // If not healthy, invalidate cache and retry
+                self.update_healthy_cache();
+                return self.select(&[]);
             }
         }
 
@@ -493,18 +566,6 @@ impl LoadBalancingStrategy for WeightedRoundRobinStrategy {
         healthy_upstreams
             .first()
             .map(|(upstream, _)| upstream.clone())
-    }
-
-    fn update_upstreams(&self, upstreams: Vec<Arc<UpstreamServer>>) {
-        let (cumulative_weights, total_weight) = Self::build_cumulative_weights(&upstreams);
-        self.upstreams.store(Arc::new(upstreams));
-        self.cumulative_weights.store(Arc::new(cumulative_weights));
-        self.total_weight
-            .store(total_weight as usize, Ordering::Relaxed);
-    }
-
-    fn get_upstreams(&self) -> Vec<Arc<UpstreamServer>> {
-        (*self.upstreams.load()).to_vec()
     }
 }
 

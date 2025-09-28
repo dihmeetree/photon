@@ -18,9 +18,9 @@ pub struct RouteTrieNode {
     /// Routes that match exactly at this node
     exact_routes: Vec<Arc<CompiledRoute>>,
     /// Child nodes for path segments
-    children: HashMap<SmallString<[u8; 16]>, Arc<RouteTrieNode>>,
+    children: HashMap<SmallString<[u8; 16]>, Box<RouteTrieNode>>,
     /// Wildcard child for patterns like /api/*
-    wildcard_child: Option<Arc<RouteTrieNode>>,
+    wildcard_child: Option<Box<RouteTrieNode>>,
     /// Double wildcard for patterns like /api/**
     double_wildcard_routes: Vec<Arc<CompiledRoute>>,
 }
@@ -42,7 +42,7 @@ impl RouteTrieNode {
         }
     }
 
-    /// Insert a route into the trie
+    /// Insert a route into the trie (optimized without cloning)
     pub fn insert(&mut self, path_segments: &[&str], route: Arc<CompiledRoute>) {
         if path_segments.is_empty() {
             self.exact_routes.push(route);
@@ -56,26 +56,27 @@ impl RouteTrieNode {
             // Double wildcard matches everything from here
             self.double_wildcard_routes.push(route);
         } else if segment == "*" {
-            // Single wildcard
+            // Single wildcard - direct mutable access, no cloning needed
             if self.wildcard_child.is_none() {
-                self.wildcard_child = Some(Arc::new(RouteTrieNode::new()));
+                self.wildcard_child = Some(Box::new(RouteTrieNode::new()));
             }
-            // Need to clone and modify due to Arc limitations
-            let mut new_node = (**self.wildcard_child.as_ref().unwrap()).clone();
-            new_node.insert(remaining, route);
-            self.wildcard_child = Some(Arc::new(new_node));
+            // Direct mutable access to the boxed node
+            self.wildcard_child
+                .as_mut()
+                .unwrap()
+                .insert(remaining, route);
         } else {
-            // Exact segment match
+            // Exact segment match - direct mutable access, no cloning needed
             let segment_key: SmallString<[u8; 16]> = SmallString::from_str(segment);
             if !self.children.contains_key(&segment_key) {
                 self.children
-                    .insert(segment_key.clone(), Arc::new(RouteTrieNode::new()));
+                    .insert(segment_key.clone(), Box::new(RouteTrieNode::new()));
             }
-            // Need to clone and modify due to Arc limitations
-            let existing_node = self.children.get(&segment_key).unwrap();
-            let mut new_node = (**existing_node).clone();
-            new_node.insert(remaining, route);
-            self.children.insert(segment_key, Arc::new(new_node));
+            // Direct mutable access to the boxed node
+            self.children
+                .get_mut(&segment_key)
+                .unwrap()
+                .insert(remaining, route);
         }
     }
 

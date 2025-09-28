@@ -185,19 +185,23 @@ impl Middleware for RateLimitingMiddleware {
         } else {
             warn!("Rate limit exceeded for key: {}", key);
 
-            // Send rate limit exceeded response
-            let mut error_response = ResponseHeader::build(429, None).unwrap();
-            error_response.insert_header("retry-after", "1").unwrap();
-            error_response
-                .insert_header("content-type", "text/plain")
-                .unwrap();
+            // Send pre-allocated rate limit response
+            let response = crate::gateway::get_error_response(429).unwrap_or_else(|| {
+                let mut resp = ResponseHeader::build(429, None).unwrap();
+                resp.insert_header("content-type", "text/plain").unwrap();
+                resp.insert_header("retry-after", "1").unwrap();
+                resp
+            });
+
+            let body = crate::gateway::get_error_body(429)
+                .unwrap_or_else(|| Bytes::from_static(b"Rate limit exceeded"));
 
             session
-                .write_response_header(Box::new(error_response), false)
+                .write_response_header(Box::new(response), false)
                 .await
                 .map_err(|e| anyhow!("Failed to write rate limit response: {}", e))?;
             session
-                .write_response_body(Some(Bytes::from_static(b"Rate limit exceeded")), true)
+                .write_response_body(Some(body), true)
                 .await
                 .map_err(|e| anyhow!("Failed to write rate limit response body: {}", e))?;
 
@@ -458,13 +462,14 @@ impl Middleware for AuthenticationMiddleware {
                 };
 
                 if !self.validate_jwt(token)? {
-                    let mut error_response = ResponseHeader::build(401, None).unwrap();
-                    error_response
-                        .insert_header("content-type", "text/plain")
-                        .unwrap();
+                    let response = crate::gateway::get_error_response(401).unwrap_or_else(|| {
+                        let mut resp = ResponseHeader::build(401, None).unwrap();
+                        resp.insert_header("content-type", "text/plain").unwrap();
+                        resp
+                    });
 
                     session
-                        .write_response_header(Box::new(error_response), false)
+                        .write_response_header(Box::new(response), false)
                         .await
                         .map_err(|e| anyhow!("Failed to write auth response: {}", e))?;
                     session
@@ -490,13 +495,14 @@ impl Middleware for AuthenticationMiddleware {
                     .ok_or_else(|| anyhow!("API key header missing"))?;
 
                 if !self.validate_api_key(api_key)? {
-                    let mut error_response = ResponseHeader::build(401, None).unwrap();
-                    error_response
-                        .insert_header("content-type", "text/plain")
-                        .unwrap();
+                    let response = crate::gateway::get_error_response(401).unwrap_or_else(|| {
+                        let mut resp = ResponseHeader::build(401, None).unwrap();
+                        resp.insert_header("content-type", "text/plain").unwrap();
+                        resp
+                    });
 
                     session
-                        .write_response_header(Box::new(error_response), false)
+                        .write_response_header(Box::new(response), false)
                         .await
                         .map_err(|e| anyhow!("Failed to write auth response: {}", e))?;
                     session

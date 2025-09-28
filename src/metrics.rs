@@ -127,6 +127,9 @@ pub struct MetricsCollector {
 
     /// Configuration
     config: MetricsConfig,
+
+    /// High-performance lock-free metrics buffer for hot path operations
+    lock_free_buffer: Option<Arc<LockFreeMetricsBuffer>>,
 }
 
 impl MetricsCollector {
@@ -262,33 +265,47 @@ impl MetricsCollector {
             websocket_messages_total,
             websocket_connection_duration,
             config: config.clone(),
+            lock_free_buffer: None, // Will be initialized via enable_lock_free_mode
         })
     }
 
-    /// Record a new request
+    /// Enable lock-free metrics collection for high-performance scenarios
+    pub fn enable_lock_free_mode(&mut self, collector_arc: Arc<MetricsCollector>) {
+        self.lock_free_buffer = Some(Arc::new(LockFreeMetricsBuffer::new(collector_arc)));
+    }
+
+    /// Record a new request (lock-free when enabled)
     pub fn record_request(&self) {
-        self.requests_total.inc();
-        self.requests_in_flight.inc();
+        if let Some(buffer) = &self.lock_free_buffer {
+            buffer.record_request();
+        } else {
+            self.requests_total.inc();
+            self.requests_in_flight.inc();
+        }
     }
 
     /// Record a completed response with status code grouping to limit cardinality
     pub fn record_response(&self, status_code: u16, duration: Duration) {
-        self.requests_in_flight.dec();
-        self.request_duration.observe(duration.as_secs_f64());
+        if let Some(buffer) = &self.lock_free_buffer {
+            buffer.record_response(status_code, duration);
+        } else {
+            self.requests_in_flight.dec();
+            self.request_duration.observe(duration.as_secs_f64());
 
-        // Record status code if detailed metrics are enabled, but group to reduce cardinality
-        if self.config.detailed_metrics {
-            // Group status codes to reduce metric cardinality
-            let _status_group = match status_code {
-                200..=299 => "2xx",
-                300..=399 => "3xx",
-                400..=499 => "4xx",
-                500..=599 => "5xx",
-                _ => "other",
-            };
-            // For now, just increment the total counter to avoid high cardinality
-            // In production, you'd want to use labeled metrics with status_group
-            self.response_status_total.inc();
+            // Record status code if detailed metrics are enabled, but group to reduce cardinality
+            if self.config.detailed_metrics {
+                // Group status codes to reduce metric cardinality
+                let _status_group = match status_code {
+                    200..=299 => "2xx",
+                    300..=399 => "3xx",
+                    400..=499 => "4xx",
+                    500..=599 => "5xx",
+                    _ => "other",
+                };
+                // For now, just increment the total counter to avoid high cardinality
+                // In production, you'd want to use labeled metrics with status_group
+                self.response_status_total.inc();
+            }
         }
     }
 
@@ -340,9 +357,13 @@ impl MetricsCollector {
         self.upstream_requests_total.inc();
     }
 
-    /// Record an upstream error
+    /// Record an upstream error (lock-free when enabled)
     pub fn record_upstream_error(&self) {
-        self.upstream_errors_total.inc();
+        if let Some(buffer) = &self.lock_free_buffer {
+            buffer.record_upstream_error();
+        } else {
+            self.upstream_errors_total.inc();
+        }
     }
 
     /// Record upstream response duration
@@ -366,9 +387,13 @@ impl MetricsCollector {
         self.active_connections.dec();
     }
 
-    /// Record a gateway error
+    /// Record a gateway error (lock-free when enabled)
     pub fn record_error(&self) {
-        self.gateway_errors_total.inc();
+        if let Some(buffer) = &self.lock_free_buffer {
+            buffer.record_error();
+        } else {
+            self.gateway_errors_total.inc();
+        }
     }
 
     /// Record a WebSocket upgrade request

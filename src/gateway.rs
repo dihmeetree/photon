@@ -25,6 +25,105 @@ use crate::{
 
 use crate::cache::ResponseCache;
 
+/// Pre-allocated error responses for high performance
+use std::collections::HashMap;
+
+static ERROR_RESPONSES: OnceLock<HashMap<u16, ResponseHeader>> = OnceLock::new();
+
+/// Initialize pre-allocated error responses
+fn init_error_responses() -> HashMap<u16, ResponseHeader> {
+    let mut responses = HashMap::new();
+
+    // 404 Not Found
+    let mut not_found = ResponseHeader::build(404, None).unwrap();
+    not_found
+        .insert_header("content-type", "text/plain")
+        .unwrap();
+    not_found.insert_header("content-length", "9").unwrap(); // "Not Found".len()
+    responses.insert(404, not_found);
+
+    // 429 Rate Limit Exceeded
+    let mut rate_limit = ResponseHeader::build(429, None).unwrap();
+    rate_limit
+        .insert_header("content-type", "text/plain")
+        .unwrap();
+    rate_limit.insert_header("content-length", "19").unwrap(); // "Rate limit exceeded".len()
+    rate_limit.insert_header("retry-after", "1").unwrap();
+    responses.insert(429, rate_limit);
+
+    // 401 Unauthorized
+    let mut unauthorized = ResponseHeader::build(401, None).unwrap();
+    unauthorized
+        .insert_header("content-type", "text/plain")
+        .unwrap();
+    unauthorized.insert_header("content-length", "12").unwrap(); // "Unauthorized".len()
+    responses.insert(401, unauthorized);
+
+    // 400 Bad Request
+    let mut bad_request = ResponseHeader::build(400, None).unwrap();
+    bad_request
+        .insert_header("content-type", "text/plain")
+        .unwrap();
+    bad_request.insert_header("content-length", "11").unwrap(); // "Bad Request".len()
+    responses.insert(400, bad_request);
+
+    // 500 Internal Server Error
+    let mut server_error = ResponseHeader::build(500, None).unwrap();
+    server_error
+        .insert_header("content-type", "text/plain")
+        .unwrap();
+    server_error.insert_header("content-length", "21").unwrap(); // "Internal Server Error".len()
+    responses.insert(500, server_error);
+
+    responses
+}
+
+/// Get pre-allocated error response
+pub fn get_error_response(status_code: u16) -> Option<ResponseHeader> {
+    ERROR_RESPONSES
+        .get_or_init(init_error_responses)
+        .get(&status_code)
+        .cloned()
+}
+
+/// Pre-allocated error response bodies
+static ERROR_BODIES: OnceLock<HashMap<u16, Bytes>> = OnceLock::new();
+
+fn init_error_bodies() -> HashMap<u16, Bytes> {
+    let mut bodies = HashMap::new();
+    bodies.insert(404, Bytes::from_static(b"Not Found"));
+    bodies.insert(429, Bytes::from_static(b"Rate limit exceeded"));
+    bodies.insert(401, Bytes::from_static(b"Unauthorized"));
+    bodies.insert(400, Bytes::from_static(b"Bad Request"));
+    bodies.insert(500, Bytes::from_static(b"Internal Server Error"));
+    bodies
+}
+
+pub fn get_error_body(status_code: u16) -> Option<Bytes> {
+    ERROR_BODIES
+        .get_or_init(init_error_bodies)
+        .get(&status_code)
+        .cloned()
+}
+
+/// Helper function to send pre-allocated error response
+async fn send_error_response(session: &mut Session, status_code: u16) -> PingoraResult<()> {
+    let response = get_error_response(status_code).unwrap_or_else(|| {
+        // Fallback for status codes not pre-allocated
+        let mut resp = ResponseHeader::build(status_code, None).unwrap();
+        resp.insert_header("content-type", "text/plain").unwrap();
+        resp
+    });
+
+    let body = get_error_body(status_code).unwrap_or_else(|| Bytes::from_static(b"Error"));
+
+    session
+        .write_response_header(Box::new(response), false)
+        .await?;
+    session.write_response_body(Some(body), true).await?;
+    Ok(())
+}
+
 /// Pre-allocated strings for better performance
 static GATEWAY_HEADER: OnceLock<String> = OnceLock::new();
 static X_REQUEST_ID_HEADER: OnceLock<String> = OnceLock::new();
@@ -425,18 +524,7 @@ impl ProxyHttp for ApiGateway {
                     session.req_header().uri.path()
                 );
 
-                let mut error_response = ResponseHeader::build(404, None).unwrap();
-                error_response
-                    .insert_header("content-type", "text/plain")
-                    .unwrap();
-
-                session
-                    .write_response_header(Box::new(error_response), false)
-                    .await?;
-                session
-                    .write_response_body(Some(Bytes::from_static(b"Not Found")), true)
-                    .await?;
-
+                send_error_response(session, 404).await?;
                 return Ok(true); // Early return
             }
         };
@@ -510,11 +598,8 @@ impl ProxyHttp for ApiGateway {
                         requested_protocol, route.config.id
                     );
 
-                    let mut error_response = ResponseHeader::build(400, None).unwrap();
-                    error_response
-                        .insert_header("content-type", "text/plain")
-                        .unwrap();
-
+                    // Use custom message for WebSocket protocol error
+                    let error_response = get_error_response(400).unwrap();
                     session
                         .write_response_header(Box::new(error_response), false)
                         .await?;
@@ -588,18 +673,7 @@ impl ProxyHttp for ApiGateway {
             Err(e) => {
                 error!("Middleware error: {}", e);
 
-                let mut error_response = ResponseHeader::build(500, None).unwrap();
-                error_response
-                    .insert_header("content-type", "text/plain")
-                    .unwrap();
-
-                session
-                    .write_response_header(Box::new(error_response), false)
-                    .await?;
-                session
-                    .write_response_body(Some(Bytes::from_static(b"Internal Server Error")), true)
-                    .await?;
-
+                send_error_response(session, 500).await?;
                 return Ok(true);
             }
         }
