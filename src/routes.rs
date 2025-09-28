@@ -3,6 +3,7 @@ use anyhow::{anyhow, Result};
 use log::debug;
 use pingora_http::RequestHeader;
 use regex::Regex;
+use smallstr::SmallString;
 use std::collections::HashMap;
 use std::sync::{Arc, OnceLock};
 
@@ -10,6 +11,101 @@ use crate::config::{RouteConfig, WebSocketConfig};
 
 /// Cache for common regex patterns to avoid recompilation
 static COMMON_REGEX_PATTERNS: OnceLock<HashMap<String, Regex>> = OnceLock::new();
+
+/// High-performance route trie for fast path matching
+#[derive(Debug, Clone)]
+pub struct RouteTrieNode {
+    /// Routes that match exactly at this node
+    exact_routes: Vec<Arc<CompiledRoute>>,
+    /// Child nodes for path segments
+    children: HashMap<SmallString<[u8; 16]>, Arc<RouteTrieNode>>,
+    /// Wildcard child for patterns like /api/*
+    wildcard_child: Option<Arc<RouteTrieNode>>,
+    /// Double wildcard for patterns like /api/**
+    double_wildcard_routes: Vec<Arc<CompiledRoute>>,
+}
+
+impl Default for RouteTrieNode {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl RouteTrieNode {
+    /// Create a new empty trie node
+    pub fn new() -> Self {
+        Self {
+            exact_routes: Vec::new(),
+            children: HashMap::new(),
+            wildcard_child: None,
+            double_wildcard_routes: Vec::new(),
+        }
+    }
+
+    /// Insert a route into the trie
+    pub fn insert(&mut self, path_segments: &[&str], route: Arc<CompiledRoute>) {
+        if path_segments.is_empty() {
+            self.exact_routes.push(route);
+            return;
+        }
+
+        let segment = path_segments[0];
+        let remaining = &path_segments[1..];
+
+        if segment == "**" {
+            // Double wildcard matches everything from here
+            self.double_wildcard_routes.push(route);
+        } else if segment == "*" {
+            // Single wildcard
+            if self.wildcard_child.is_none() {
+                self.wildcard_child = Some(Arc::new(RouteTrieNode::new()));
+            }
+            // Need to clone and modify due to Arc limitations
+            let mut new_node = (**self.wildcard_child.as_ref().unwrap()).clone();
+            new_node.insert(remaining, route);
+            self.wildcard_child = Some(Arc::new(new_node));
+        } else {
+            // Exact segment match
+            let segment_key: SmallString<[u8; 16]> = SmallString::from_str(segment);
+            if !self.children.contains_key(&segment_key) {
+                self.children
+                    .insert(segment_key.clone(), Arc::new(RouteTrieNode::new()));
+            }
+            // Need to clone and modify due to Arc limitations
+            let existing_node = self.children.get(&segment_key).unwrap();
+            let mut new_node = (**existing_node).clone();
+            new_node.insert(remaining, route);
+            self.children.insert(segment_key, Arc::new(new_node));
+        }
+    }
+
+    /// Find matching routes for a path
+    pub fn find_matches(&self, path_segments: &[&str], matches: &mut Vec<Arc<CompiledRoute>>) {
+        // Add exact matches at this level
+        matches.extend(self.exact_routes.iter().cloned());
+
+        // Add double wildcard matches (they match everything from here)
+        matches.extend(self.double_wildcard_routes.iter().cloned());
+
+        if path_segments.is_empty() {
+            return;
+        }
+
+        let segment = path_segments[0];
+        let remaining = &path_segments[1..];
+
+        // Try exact match first
+        let segment_key: SmallString<[u8; 16]> = SmallString::from_str(segment);
+        if let Some(child) = self.children.get(&segment_key) {
+            child.find_matches(remaining, matches);
+        }
+
+        // Try wildcard match
+        if let Some(wildcard_child) = &self.wildcard_child {
+            wildcard_child.find_matches(remaining, matches);
+        }
+    }
+}
 
 /// Initialize common regex patterns cache
 fn get_common_patterns() -> &'static HashMap<String, Regex> {
@@ -227,6 +323,35 @@ impl CompiledRoute {
         // If no protocols configured, allow any protocol
         true
     }
+
+    /// Check if caching is enabled for this route
+    pub fn is_cache_enabled(&self) -> bool {
+        // Check route-specific cache configuration first
+        if let Some(ref cache_config) = self.config.cache {
+            return cache_config.enabled;
+        }
+        // If no route-specific config, defaults to false (cache disabled)
+        false
+    }
+
+    /// Check if caching is enabled for the given HTTP method
+    pub fn is_cache_enabled_for_method(&self, method: &http::Method) -> bool {
+        if !self.is_cache_enabled() {
+            return false;
+        }
+
+        // Check if method is allowed for caching in route config
+        if let Some(ref cache_config) = self.config.cache {
+            if let Some(ref methods) = cache_config.methods {
+                return methods
+                    .iter()
+                    .any(|m| m.eq_ignore_ascii_case(method.as_str()));
+            }
+        }
+
+        // Default to only GET requests if no methods specified
+        method == http::Method::GET
+    }
 }
 
 /// Route manager for handling request routing with optimized storage
@@ -235,6 +360,10 @@ pub struct RouteManager {
     routes: Vec<Arc<CompiledRoute>>,
     /// Route lookup by ID (Arc to avoid cloning)
     route_by_id: HashMap<String, Arc<CompiledRoute>>,
+    /// High-performance trie for fast path matching
+    route_trie: RouteTrieNode,
+    /// Routes that require regex matching (complex patterns)
+    regex_routes: Vec<Arc<CompiledRoute>>,
 }
 
 impl RouteManager {
@@ -242,6 +371,8 @@ impl RouteManager {
     pub fn new(route_configs: &[RouteConfig]) -> Result<Self> {
         let mut routes = Vec::with_capacity(route_configs.len());
         let mut route_by_id = HashMap::with_capacity(route_configs.len());
+        let mut route_trie = RouteTrieNode::new();
+        let mut regex_routes = Vec::new();
 
         for config in route_configs {
             let compiled_route = Arc::new(CompiledRoute::new(config.clone())?);
@@ -252,7 +383,22 @@ impl RouteManager {
             }
 
             route_by_id.insert(config.id.clone(), compiled_route.clone());
-            routes.push(compiled_route);
+            routes.push(compiled_route.clone());
+
+            // Categorize routes for optimal matching
+            if Self::is_simple_pattern(&config.path) {
+                // Simple patterns go into the trie
+                let segments: Vec<&str> = config
+                    .path
+                    .trim_matches('/')
+                    .split('/')
+                    .filter(|s| !s.is_empty())
+                    .collect();
+                route_trie.insert(&segments, compiled_route);
+            } else {
+                // Complex patterns require regex matching
+                regex_routes.push(compiled_route);
+            }
         }
 
         // Sort routes by priority (more specific routes first)
@@ -275,7 +421,20 @@ impl RouteManager {
             }
         });
 
-        debug!("Loaded {} routes", routes.len());
+        // Sort regex routes by specificity
+        regex_routes.sort_by(|a, b| {
+            // More specific patterns first
+            let a_specificity = Self::calculate_specificity(&a.config.path);
+            let b_specificity = Self::calculate_specificity(&b.config.path);
+            b_specificity.cmp(&a_specificity)
+        });
+
+        debug!(
+            "Loaded {} routes ({} trie, {} regex)",
+            routes.len(),
+            routes.len() - regex_routes.len(),
+            regex_routes.len()
+        );
         for route in &routes {
             debug!(
                 "Route '{}': {} {} -> backend '{}'",
@@ -294,22 +453,68 @@ impl RouteManager {
         Ok(Self {
             routes,
             route_by_id,
+            route_trie,
+            regex_routes,
         })
     }
 
-    /// Find the first matching route for a request with fast-path optimization
+    /// Check if a pattern is simple enough for trie matching
+    fn is_simple_pattern(path: &str) -> bool {
+        // Simple patterns: exact paths, single wildcards (*), double wildcards (**)
+        // Complex patterns: regex, character classes, etc.
+        !path.contains('[')
+            && !path.contains('{')
+            && !path.contains('^')
+            && !path.contains('$')
+            && !path.contains('+')
+    }
+
+    /// Calculate pattern specificity for sorting
+    fn calculate_specificity(path: &str) -> i32 {
+        let mut score = 0;
+        for segment in path.split('/') {
+            match segment {
+                "**" => score -= 10,                // Very generic
+                "*" => score -= 5,                  // Generic
+                s if s.contains('*') => score -= 2, // Partially generic
+                s if !s.is_empty() => score += 10,  // Specific
+                _ => {}
+            }
+        }
+        score
+    }
+
+    /// Find the first matching route for a request with optimized trie-based matching
     pub fn find_route(&self, req: &RequestHeader) -> Option<Arc<CompiledRoute>> {
         let path = req.uri.path();
         let method = &req.method;
 
-        // Fast path: try to find routes with exact prefix matches first
+        // Ultra-fast trie-based matching for simple patterns
+        let segments: Vec<&str> = path
+            .trim_matches('/')
+            .split('/')
+            .filter(|s| !s.is_empty())
+            .collect();
+        let mut trie_matches = Vec::new();
+        self.route_trie.find_matches(&segments, &mut trie_matches);
+
+        // Check trie matches first (fastest path)
+        for route in &trie_matches {
+            if route.matches_method(method) && route.matches(req) {
+                debug!(
+                    "Route '{}' trie-matched for {} {}",
+                    route.config.id, req.method, path
+                );
+                return Some(route.clone());
+            }
+        }
+
+        // Fast path: try exact prefix matches for remaining routes
         for route in &self.routes {
-            // Quick method check before more expensive path matching
             if !route.matches_method(method) {
                 continue;
             }
 
-            // Fast path for exact string matches or simple prefixes
             if route.has_exact_path_match(path) {
                 debug!(
                     "Route '{}' fast-matched for {} {}",
@@ -319,8 +524,8 @@ impl RouteManager {
             }
         }
 
-        // Fallback to full regex matching for complex patterns
-        for route in &self.routes {
+        // Fallback to regex matching for complex patterns
+        for route in &self.regex_routes {
             if route.matches(req) {
                 debug!(
                     "Route '{}' regex-matched for {} {}",
@@ -438,6 +643,7 @@ mod tests {
             timeout: None,
             retries: None,
             websocket: None,
+            cache: None,
         };
 
         let route = CompiledRoute::new(config).unwrap();
@@ -472,6 +678,7 @@ mod tests {
                 timeout: None,
                 retries: None,
                 websocket: None,
+                cache: None,
             },
             RouteConfig {
                 id: "specific".to_string(),
@@ -483,6 +690,7 @@ mod tests {
                 timeout: None,
                 retries: None,
                 websocket: None,
+                cache: None,
             },
         ];
 

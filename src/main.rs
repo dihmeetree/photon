@@ -16,6 +16,7 @@ use clap::Parser;
 use log::{error, info};
 use std::sync::Arc;
 
+mod cache;
 mod config;
 mod gateway;
 mod health;

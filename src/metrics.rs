@@ -1,5 +1,6 @@
 /// Metrics collection and monitoring for the API Gateway
 use anyhow::Result;
+use pingora_timeout::sleep;
 use prometheus::{Counter, Histogram, HistogramOpts, IntCounter, IntGauge, Opts, Registry};
 use std::{
     sync::{
@@ -532,6 +533,102 @@ impl MetricsMiddleware {
     }
 }
 
+/// Lock-free metrics buffer using ring buffer
+const METRICS_BUFFER_SIZE: usize = 1024;
+
+/// Metrics event for lock-free collection
+#[derive(Debug, Clone, Copy)]
+enum MetricsEvent {
+    RequestStart,
+    RequestComplete { status_code: u16, duration_ns: u64 },
+    Error,
+    UpstreamError,
+}
+
+/// Lock-free metrics buffer using crossbeam channels
+pub struct LockFreeMetricsBuffer {
+    sender: crossbeam::channel::Sender<MetricsEvent>,
+    _receiver_handle: std::thread::JoinHandle<()>,
+}
+
+impl LockFreeMetricsBuffer {
+    /// Create a new lock-free metrics buffer
+    pub fn new(collector: Arc<MetricsCollector>) -> Self {
+        let (sender, receiver) = crossbeam::channel::bounded(METRICS_BUFFER_SIZE);
+
+        let handle = std::thread::spawn(move || {
+            let mut batch = MetricsBatch::new();
+            let mut last_flush = std::time::Instant::now();
+            const FLUSH_INTERVAL: std::time::Duration = std::time::Duration::from_millis(100);
+
+            while let Ok(event) = receiver.recv_timeout(FLUSH_INTERVAL) {
+                match event {
+                    MetricsEvent::RequestStart => {
+                        batch.add_request();
+                    }
+                    MetricsEvent::RequestComplete {
+                        status_code,
+                        duration_ns,
+                    } => {
+                        batch.add_response(
+                            status_code,
+                            std::time::Duration::from_nanos(duration_ns),
+                        );
+                    }
+                    MetricsEvent::Error => {
+                        batch.add_error();
+                    }
+                    MetricsEvent::UpstreamError => {
+                        batch.add_upstream_error();
+                    }
+                }
+
+                // Flush if batch is full or time threshold reached
+                if (batch.requests >= 100 || last_flush.elapsed() >= FLUSH_INTERVAL)
+                    && !batch.is_empty()
+                {
+                    collector.apply_batch(&batch);
+                    batch.clear();
+                    last_flush = std::time::Instant::now();
+                }
+            }
+
+            // Final flush on shutdown
+            if !batch.is_empty() {
+                collector.apply_batch(&batch);
+            }
+        });
+
+        Self {
+            sender,
+            _receiver_handle: handle,
+        }
+    }
+
+    /// Record a request start (non-blocking)
+    pub fn record_request(&self) {
+        let _ = self.sender.try_send(MetricsEvent::RequestStart);
+    }
+
+    /// Record a request completion (non-blocking)
+    pub fn record_response(&self, status_code: u16, duration: std::time::Duration) {
+        let _ = self.sender.try_send(MetricsEvent::RequestComplete {
+            status_code,
+            duration_ns: duration.as_nanos() as u64,
+        });
+    }
+
+    /// Record an error (non-blocking)
+    pub fn record_error(&self) {
+        let _ = self.sender.try_send(MetricsEvent::Error);
+    }
+
+    /// Record an upstream error (non-blocking)
+    pub fn record_upstream_error(&self) {
+        let _ = self.sender.try_send(MetricsEvent::UpstreamError);
+    }
+}
+
 /// High-performance metrics aggregator with batching
 pub struct MetricsAggregator {
     collector: Arc<MetricsCollector>,
@@ -539,6 +636,8 @@ pub struct MetricsAggregator {
     batch_size_threshold: usize,
     time_threshold_ms: u64,
     last_flush_time: AtomicU64,
+    /// Lock-free buffer for high-throughput scenarios
+    lock_free_buffer: Option<LockFreeMetricsBuffer>,
 }
 
 impl MetricsAggregator {
@@ -559,11 +658,32 @@ impl MetricsAggregator {
             batch_size_threshold: batch_size,
             time_threshold_ms: flush_interval_ms,
             last_flush_time: AtomicU64::new(now_millis),
+            lock_free_buffer: None,
+        }
+    }
+
+    /// Create a high-performance lock-free metrics aggregator
+    pub fn new_lock_free(collector: Arc<MetricsCollector>) -> Self {
+        let lock_free_buffer = LockFreeMetricsBuffer::new(collector.clone());
+
+        Self {
+            collector,
+            current_batch: std::sync::Mutex::new(MetricsBatch::new()),
+            batch_size_threshold: 1000,
+            time_threshold_ms: 100,
+            last_flush_time: AtomicU64::new(0),
+            lock_free_buffer: Some(lock_free_buffer),
         }
     }
 
     /// Add a request to the batch
     pub fn record_request(&self) {
+        // Use lock-free buffer if available
+        if let Some(buffer) = &self.lock_free_buffer {
+            buffer.record_request();
+            return;
+        }
+
         if let Ok(mut batch) = self.current_batch.try_lock() {
             batch.add_request();
             self.check_and_flush(&mut batch);
@@ -575,6 +695,12 @@ impl MetricsAggregator {
 
     /// Add a response to the batch
     pub fn record_response(&self, status_code: u16, duration: Duration) {
+        // Use lock-free buffer if available
+        if let Some(buffer) = &self.lock_free_buffer {
+            buffer.record_response(status_code, duration);
+            return;
+        }
+
         if let Ok(mut batch) = self.current_batch.try_lock() {
             batch.add_response(status_code, duration);
             self.check_and_flush(&mut batch);
@@ -586,6 +712,12 @@ impl MetricsAggregator {
 
     /// Add an error to the batch
     pub fn record_error(&self) {
+        // Use lock-free buffer if available
+        if let Some(buffer) = &self.lock_free_buffer {
+            buffer.record_error();
+            return;
+        }
+
         if let Ok(mut batch) = self.current_batch.try_lock() {
             batch.add_error();
             self.check_and_flush(&mut batch);
@@ -597,6 +729,12 @@ impl MetricsAggregator {
 
     /// Add an upstream error to the batch
     pub fn record_upstream_error(&self) {
+        // Use lock-free buffer if available
+        if let Some(buffer) = &self.lock_free_buffer {
+            buffer.record_upstream_error();
+            return;
+        }
+
         if let Ok(mut batch) = self.current_batch.try_lock() {
             batch.add_upstream_error();
             self.check_and_flush(&mut batch);
@@ -686,7 +824,7 @@ impl MetricsUpdater {
                 // This would typically query the health check manager
                 // For now, we'll skip this as it requires integration
 
-                tokio::time::sleep(update_interval).await;
+                sleep(update_interval).await;
             }
         });
     }

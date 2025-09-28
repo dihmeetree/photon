@@ -111,6 +111,11 @@ routes:
     backend: "web_service"
     timeout: "10s"
     retries: 3
+    # Cache static assets for longer periods
+    cache:
+      enabled: true
+      ttl: "86400s" # 24 hours for static assets
+      max_body_size: 5242880 # 5MB for larger assets
 
   # API routes with authentication
   - id: "api"
@@ -217,3 +222,38 @@ metrics:
   metrics_path: "/metrics"
   metrics_addr: "127.0.0.1:9090" # Prometheus metrics endpoint
   detailed_metrics: true
+
+# Response caching configuration
+cache:
+  # Enable or disable response caching globally (disabled by default)
+  # Individual routes can override this setting
+  enabled: false
+
+  # Maximum number of entries in cache (adjust based on available memory)
+  max_entries: 10000
+
+  # Default TTL for cached responses (if not specified by Cache-Control headers)
+  default_ttl: "300s" # 5 minutes
+
+  # Maximum size of cacheable response body (1MB)
+  max_body_size: 1048576
+
+  # Whether to cache responses with query parameters
+  # Enable for read-only APIs, disable for dynamic content
+  cache_with_query_params: false
+
+  # Production tuning examples:
+  # For high-traffic sites:
+  # max_entries: 50000
+  # max_body_size: 2097152  # 2MB
+  # default_ttl: "600s"     # 10 minutes
+  #
+  # For content APIs:
+  # cache_with_query_params: true
+  # default_ttl: "3600s"    # 1 hour
+  #
+  # For static assets:
+  # default_ttl: "86400s"   # 24 hours
+  #
+  # Note: With global caching disabled, only routes with cache.enabled: true
+  # will be cached. This provides fine-grained control and better security.

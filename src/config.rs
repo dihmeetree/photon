@@ -20,6 +20,9 @@ pub struct Config {
     pub health_check: HealthCheckConfig,
     /// Metrics and monitoring configuration
     pub metrics: MetricsConfig,
+    /// Response caching configuration
+    #[serde(default = "default_cache_config")]
+    pub cache: CacheConfig,
 }
 
 /// Server configuration
@@ -148,6 +151,8 @@ pub struct RouteConfig {
     pub retries: Option<u32>,
     /// WebSocket configuration
     pub websocket: Option<WebSocketConfig>,
+    /// Route-specific cache configuration
+    pub cache: Option<RouteCacheConfig>,
 }
 
 /// WebSocket-specific configuration for routes
@@ -337,6 +342,41 @@ pub struct MetricsConfig {
     pub detailed_metrics: bool,
 }
 
+/// Response caching configuration
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CacheConfig {
+    /// Enable response caching
+    pub enabled: bool,
+    /// Maximum number of entries in cache
+    #[serde(default = "default_max_cache_entries")]
+    pub max_entries: usize,
+    /// Default TTL for cached responses (seconds)
+    #[serde(with = "humantime_serde", default = "default_cache_ttl")]
+    pub default_ttl: Duration,
+    /// Maximum size of cacheable response body
+    #[serde(default = "default_max_body_size")]
+    pub max_body_size: usize,
+    /// Whether to cache responses with query parameters
+    #[serde(default)]
+    pub cache_with_query_params: bool,
+}
+
+/// Route-specific cache configuration
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RouteCacheConfig {
+    /// Enable caching for this route (overrides global setting)
+    pub enabled: bool,
+    /// Route-specific TTL (overrides global default_ttl)
+    #[serde(with = "humantime_serde")]
+    pub ttl: Option<Duration>,
+    /// Route-specific max body size (overrides global max_body_size)
+    pub max_body_size: Option<usize>,
+    /// Route-specific query parameter caching (overrides global setting)
+    pub cache_with_query_params: Option<bool>,
+    /// HTTP methods to cache for this route (defaults to ["GET"])
+    pub methods: Option<Vec<String>>,
+}
+
 impl Config {
     /// Load configuration from a file
     pub fn from_file(path: &str) -> Result<Self> {
@@ -440,4 +480,32 @@ fn default_write_timeout() -> Duration {
 
 fn default_upgrade_sock() -> String {
     "/tmp/photon_upgrade.sock".to_string()
+}
+
+fn default_max_cache_entries() -> usize {
+    10000
+}
+
+fn default_cache_ttl() -> Duration {
+    Duration::from_secs(300) // 5 minutes
+}
+
+fn default_max_body_size() -> usize {
+    1024 * 1024 // 1MB
+}
+
+impl Default for CacheConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false, // Disabled by default
+            max_entries: default_max_cache_entries(),
+            default_ttl: default_cache_ttl(),
+            max_body_size: default_max_body_size(),
+            cache_with_query_params: false,
+        }
+    }
+}
+
+fn default_cache_config() -> CacheConfig {
+    CacheConfig::default()
 }

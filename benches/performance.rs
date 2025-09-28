@@ -1,7 +1,9 @@
+use bytes::Bytes;
 use criterion::{black_box, criterion_group, criterion_main, Criterion};
-use photon::{RouteConfig, RouteManager};
-use pingora_http::RequestHeader;
+use photon::{CacheConfig, ResponseCache, RouteConfig, RouteManager};
+use pingora_http::{RequestHeader, ResponseHeader};
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
+use std::time::Duration;
 
 fn benchmark_route_matching(c: &mut Criterion) {
     // Setup test routes
@@ -16,6 +18,7 @@ fn benchmark_route_matching(c: &mut Criterion) {
             timeout: None,
             retries: None,
             websocket: None,
+            cache: None,
         },
         RouteConfig {
             id: "api_orders".to_string(),
@@ -27,6 +30,7 @@ fn benchmark_route_matching(c: &mut Criterion) {
             timeout: None,
             retries: None,
             websocket: None,
+            cache: None,
         },
         RouteConfig {
             id: "static_assets".to_string(),
@@ -38,6 +42,7 @@ fn benchmark_route_matching(c: &mut Criterion) {
             timeout: None,
             retries: None,
             websocket: None,
+            cache: None,
         },
         RouteConfig {
             id: "catch_all".to_string(),
@@ -49,6 +54,7 @@ fn benchmark_route_matching(c: &mut Criterion) {
             timeout: None,
             retries: None,
             websocket: None,
+            cache: None,
         },
     ];
 
@@ -162,11 +168,65 @@ fn benchmark_ip_to_string_conversion(c: &mut Criterion) {
     });
 }
 
+fn benchmark_cache_operations(c: &mut Criterion) {
+    // Setup cache with production-grade Pingora memory cache
+    let config = CacheConfig {
+        enabled: true,
+        max_entries: 10000,
+        default_ttl: Duration::from_secs(300),
+        max_body_size: 1024 * 1024,
+        cache_with_query_params: false,
+    };
+    let cache = ResponseCache::new(config);
+
+    // Pre-populate cache with test data
+    let test_response = ResponseHeader::build(200, None).unwrap();
+    let test_body = Bytes::from("test response body");
+
+    for i in 0..100 {
+        let key = format!("test_key_{}", i);
+        cache
+            .put(key, test_response.clone(), test_body.clone())
+            .unwrap();
+    }
+
+    // Create test request for cache key generation
+    let test_request = RequestHeader::build("GET", b"/api/test", None).unwrap();
+
+    c.bench_function("cache_key_generation", |b| {
+        b.iter(|| black_box(cache.generate_cache_key(&test_request)))
+    });
+
+    c.bench_function("cache_hit_lookup", |b| {
+        b.iter(|| {
+            // Lookup existing key (cache hit)
+            black_box(cache.get("test_key_50"))
+        })
+    });
+
+    c.bench_function("cache_miss_lookup", |b| {
+        b.iter(|| {
+            // Lookup non-existing key (cache miss)
+            black_box(cache.get("non_existing_key"))
+        })
+    });
+
+    c.bench_function("cache_put_operation", |b| {
+        let mut counter = 0;
+        b.iter(|| {
+            counter += 1;
+            let key = format!("bench_key_{}", counter);
+            black_box(cache.put(key, test_response.clone(), test_body.clone()))
+        })
+    });
+}
+
 criterion_group!(
     benches,
     benchmark_route_matching,
     benchmark_request_id_generation,
     benchmark_ip_hash_key_generation,
-    benchmark_ip_to_string_conversion
+    benchmark_ip_to_string_conversion,
+    benchmark_cache_operations
 );
 criterion_main!(benches);

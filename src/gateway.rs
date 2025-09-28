@@ -23,6 +23,8 @@ use crate::{
     routes::RouteManager,
 };
 
+use crate::cache::ResponseCache;
+
 /// Pre-allocated strings for better performance
 static GATEWAY_HEADER: OnceLock<String> = OnceLock::new();
 static X_REQUEST_ID_HEADER: OnceLock<String> = OnceLock::new();
@@ -51,6 +53,14 @@ pub struct RequestContext {
     pub request_id: String,
     /// Custom context data for middleware (only allocated when needed)
     pub custom_data: Option<std::collections::HashMap<String, String>>,
+    /// Cache-related fields
+    pub cache_key: Option<String>,
+    pub should_cache: bool,
+    pub route: Option<Arc<crate::routes::CompiledRoute>>,
+    pub method: http::Method,
+    /// Response storage for caching
+    pub cached_response_headers: Option<ResponseHeader>,
+    pub cached_response_body: Vec<u8>,
 }
 
 impl RequestContext {
@@ -82,6 +92,12 @@ impl RequestContext {
             client_ip,
             request_id,
             custom_data: None,
+            cache_key: None,
+            should_cache: false,
+            route: None,
+            method: http::Method::GET, // Default, will be updated in request_filter
+            cached_response_headers: None,
+            cached_response_body: Vec::new(),
         }
     }
 
@@ -128,6 +144,8 @@ pub struct ApiGateway {
     health_check_manager: Arc<HealthCheckManager>,
     /// Metrics collector
     metrics_collector: Arc<MetricsCollector>,
+    /// Response cache for performance optimization
+    response_cache: Arc<ResponseCache>,
     /// Request ID counter for performance
     request_counter: Arc<AtomicU64>,
 }
@@ -167,6 +185,9 @@ impl ApiGateway {
         // Initialize metrics collector
         let metrics_collector = Arc::new(MetricsCollector::new(&config.metrics)?);
 
+        // Initialize response cache
+        let response_cache = Arc::new(ResponseCache::new(config.cache.clone()));
+
         Ok(Self {
             config,
             backend_manager,
@@ -174,6 +195,7 @@ impl ApiGateway {
             middleware_chain,
             health_check_manager,
             metrics_collector,
+            response_cache,
             request_counter: Arc::new(AtomicU64::new(0)),
         })
     }
@@ -418,6 +440,55 @@ impl ProxyHttp for ApiGateway {
                 return Ok(true); // Early return
             }
         };
+
+        // Store method and route for caching
+        ctx.method = session.req_header().method.clone();
+        ctx.route = Some(route.clone());
+
+        // Check cache if enabled for this route and method
+        if route.is_cache_enabled_for_method(&session.req_header().method) {
+            if let Some(cache_key) = self.response_cache.generate_cache_key(session.req_header()) {
+                if let Some((cached_entry, cache_status)) = self.response_cache.get(&cache_key) {
+                    debug!(
+                        "Cache HIT for {} {}",
+                        session.req_header().method,
+                        session.req_header().uri.path()
+                    );
+
+                    // Clone the headers and add cache status headers
+                    let mut response_headers = cached_entry.headers.clone();
+                    if let Err(e) = self.response_cache.add_cache_headers(
+                        &mut response_headers,
+                        cache_status,
+                        Some(&cache_key),
+                    ) {
+                        error!("Failed to add cache headers: {}", e);
+                    }
+
+                    // Write cached response headers
+                    session
+                        .write_response_header(Box::new(response_headers), false)
+                        .await?;
+
+                    // Write cached response body
+                    session
+                        .write_response_body(Some(cached_entry.body.clone()), true)
+                        .await?;
+
+                    return Ok(true); // Early return with cached response
+                } else {
+                    debug!(
+                        "Cache MISS for {} {}",
+                        session.req_header().method,
+                        session.req_header().uri.path()
+                    );
+
+                    // Mark this request for caching
+                    ctx.cache_key = Some(cache_key);
+                    ctx.should_cache = true;
+                }
+            }
+        }
 
         // Check for WebSocket upgrade requests
         if route.is_websocket_upgrade_request(session.req_header()) {
@@ -747,7 +818,72 @@ impl ProxyHttp for ApiGateway {
                 pingora_core::Error::new_str("Failed to add request ID")
             })?;
 
+        // Handle caching for cache misses
+        if ctx.should_cache {
+            // Store response headers for caching
+            ctx.cached_response_headers = Some(upstream_response.clone());
+
+            // Add cache MISS headers
+            if let Some(ref cache_key) = ctx.cache_key {
+                if let Err(e) = upstream_response.insert_header("X-Cache", "MISS") {
+                    error!("Failed to add X-Cache header: {}", e);
+                }
+                if let Err(e) = upstream_response.insert_header("X-Cache-Key", cache_key) {
+                    error!("Failed to add X-Cache-Key header: {}", e);
+                }
+
+                debug!("Added cache MISS headers for {}", cache_key);
+            }
+        }
+
         Ok(())
+    }
+
+    /// Filter response body chunks for caching
+    fn response_body_filter(
+        &self,
+        _session: &mut Session,
+        body: &mut Option<Bytes>,
+        end_of_stream: bool,
+        ctx: &mut Self::CTX,
+    ) -> PingoraResult<Option<std::time::Duration>>
+    where
+        Self::CTX: Send + Sync,
+    {
+        // Capture response body for caching
+        if ctx.should_cache {
+            if let Some(chunk) = body {
+                ctx.cached_response_body.extend_from_slice(chunk);
+            }
+
+            // Store in cache when we reach end of stream
+            if end_of_stream {
+                if let (Some(ref cache_key), Some(ref headers)) =
+                    (&ctx.cache_key, &ctx.cached_response_headers)
+                {
+                    let body_bytes = Bytes::from(ctx.cached_response_body.clone());
+                    let status_code = headers.status.as_u16();
+
+                    // Store in cache if response is cacheable
+                    if self.response_cache.is_cacheable(
+                        status_code,
+                        headers,
+                        ctx.cached_response_body.len(),
+                    ) {
+                        if let Err(e) =
+                            self.response_cache
+                                .put(cache_key.clone(), headers.clone(), body_bytes)
+                        {
+                            error!("Failed to store response in cache: {}", e);
+                        } else {
+                            debug!("Stored response in cache with key: {}", cache_key);
+                        }
+                    }
+                }
+            }
+        }
+
+        Ok(None)
     }
 
     /// Handle connection errors

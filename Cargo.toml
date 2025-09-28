@@ -18,6 +18,8 @@ pingora-http = { path = "pingora/pingora-http" }
 pingora-error = { path = "pingora/pingora-error" }
 pingora-runtime = { path = "pingora/pingora-runtime" }
 pingora-cache = { path = "pingora/pingora-cache", default-features = false, features = ["rustls"] }
+pingora-memory-cache = { path = "pingora/pingora-memory-cache" }
+pingora-timeout = { path = "pingora/pingora-timeout" }
 
 # Async runtime and utilities
 tokio = { version = "1", features = ["full"] }
@@ -65,6 +67,9 @@ base64 = "0.21"
 # Time and duration utilities
 chrono = { version = "0.4", features = ["serde"] }
 humantime-serde = "1.1"
+smallstr = "0.3.1"
+crossbeam = "0.8.4"
+num_cpus = "1.17.0"
 
 [dev-dependencies]
 tokio-test = "0.4"

@@ -1,6 +1,7 @@
 /// Health check system for upstream servers
 use anyhow::{anyhow, Result};
 use log::{debug, info, warn};
+use pingora_timeout::{sleep, timeout};
 use std::{
     collections::HashMap,
     sync::{
@@ -9,7 +10,7 @@ use std::{
     },
     time::Duration,
 };
-use tokio::{net::TcpStream, time::timeout};
+use tokio::net::TcpStream;
 
 use crate::{
     config::{BackendHealthCheckConfig, HealthCheckConfig, HealthCheckType},
@@ -112,7 +113,7 @@ impl UpstreamHealthChecker {
 
             // Initial random delay to spread out health checks
             let initial_delay = Duration::from_millis(rand::random::<u64>() % 1000);
-            tokio::time::sleep(initial_delay).await;
+            sleep(initial_delay).await;
 
             while running_check.load(Ordering::Relaxed) {
                 let check_start = std::time::Instant::now();
@@ -173,7 +174,7 @@ impl UpstreamHealthChecker {
                 .saturating_sub(check_duration); // Account for check execution time
 
                 if sleep_duration > Duration::ZERO {
-                    tokio::time::sleep(sleep_duration).await;
+                    sleep(sleep_duration).await;
                 }
             }
 
