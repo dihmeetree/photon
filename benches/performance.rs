@@ -274,7 +274,7 @@ fn benchmark_concurrent_route_matching(c: &mut Criterion) {
             let counter = Arc::new(AtomicUsize::new(0));
 
             let handles: Vec<_> = (0..8)
-                .map(|i| {
+                .map(|_| {
                     let manager_clone = manager.clone();
                     let counter_clone = counter.clone();
 
@@ -355,11 +355,16 @@ fn benchmark_concurrent_cache_operations(c: &mut Criterion) {
         b.iter(|| {
             let cache_clone = cache.clone();
             let counter = Arc::new(AtomicUsize::new(0));
+            // Clone the test objects inside the closure to avoid capture issues
+            let test_response_clone = test_response.clone();
+            let test_body_clone = test_body.clone();
 
             let handles: Vec<_> = (0..8)
                 .map(|thread_id| {
                     let cache = cache_clone.clone();
                     let counter_clone = counter.clone();
+                    let test_response = test_response_clone.clone();
+                    let test_body = test_body_clone.clone();
 
                     thread::spawn(move || {
                         for i in 0..50 {
