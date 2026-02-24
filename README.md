@@ -1,4 +1,6 @@
-# ⚡ Photon API Gateway
+<p align="center">
+  <img src="https://i.ibb.co/ZzBCfLKS/IMG-0692.jpg" alt="Photon" width="850">
+</p>
 
 **Photon** is a production-ready, ultra-high-performance API Gateway built with Cloudflare Pingora. Featuring advanced load balancing, health checks, middleware support, and comprehensive monitoring. Optimized for enterprise-scale deployments with light-speed performance.
 
